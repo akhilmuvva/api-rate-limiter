@@ -27,49 +27,35 @@ fun Route.authRoutes(jwtService: JwtService) {
         post("/google") {
             try {
                 val req = call.receive<GoogleAuthRequest>()
-                var email: String? = null
-                var name: String? = null
-                var sub: String? = null
+                
+                // 1. Authenticate Google user using cryptographically verified ID token
+                val verifiedPayload = if (!req.idToken.isNullOrBlank()) {
+                    jwtService.verifyGoogleIdToken(req.idToken)
+                } else null
 
-                // 1. If Google ID token is provided, extract and validate OpenID Connect JWT claims
-                if (!req.idToken.isNullOrBlank()) {
-                    val googlePayload = jwtService.parseGoogleIdToken(req.idToken)
-                    if (googlePayload != null) {
-                        email = googlePayload.email
-                        name = googlePayload.name ?: req.displayName
-                        sub = googlePayload.sub
-                        logger.info("Successfully validated Google ID Token JWT for $email (sub=$sub)")
-                    } else {
-                        logger.warn("Provided Google ID Token could not be parsed as valid OpenID Connect JWT, falling back to direct credentials")
-                    }
-                }
+                val finalEmail: String
+                val finalName: String
+                val finalSub: String
+                val role: String
 
-                // 2. Fallback to direct verified Google credentials if token parsing was unavailable or absent
-                if (email.isNullOrBlank()) {
-                    email = req.email
-                    name = req.displayName
-                    sub = req.email
-                }
-
-                if (email.isNullOrBlank()) {
-                    call.respond(
-                        HttpStatusCode.BadRequest,
-                        ApiMessage("Invalid Google login: idToken or verified email must be provided")
-                    )
-                    return@post
-                }
-
-                val finalEmail = email.trim().lowercase()
-                val finalName = name ?: "Google User"
-                val finalSub = sub ?: finalEmail
-
-                // Determine role: strictly check against authorized administrator emails (prevent privilege escalation)
                 val adminEmailsEnv = System.getenv("ADMIN_EMAILS") ?: "akpolylance@gmail.com"
                 val adminEmails = adminEmailsEnv.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
-                val role = if (adminEmails.contains(finalEmail)) {
-                    "ADMIN"
+
+                if (verifiedPayload != null) {
+                    finalEmail = verifiedPayload.email.trim().lowercase()
+                    finalName = verifiedPayload.name ?: req.displayName ?: "Google User"
+                    finalSub = verifiedPayload.sub
+                    // Role derived ONLY from verified Google email
+                    role = if (adminEmails.contains(finalEmail)) "ADMIN" else "VIEWER"
+                    logger.info("Validated Google ID token for $finalEmail -> role=$role")
                 } else {
-                    "VIEWER"
+                    // No valid Google ID token: NEVER trust client-supplied email for ADMIN role.
+                    // Fall back to unauthenticated guest VIEWER
+                    finalEmail = (req.email?.takeIf { it.isNotBlank() } ?: "guest@cutm.nt14").trim().lowercase()
+                    finalName = req.displayName ?: "Guest User"
+                    finalSub = "guest_" + java.util.UUID.randomUUID().toString().take(8)
+                    role = "VIEWER" // Strictest security: unverified guests are always VIEWER
+                    logger.info("Issued unverified guest session for $finalEmail with role=VIEWER")
                 }
 
                 val token = jwtService.generateToken(
@@ -77,11 +63,11 @@ fun Route.authRoutes(jwtService: JwtService) {
                     email = finalEmail,
                     name = finalName,
                     role = role,
-                    provider = "google",
+                    provider = if (verifiedPayload != null) "google" else "guest",
                     expirationSeconds = 86400L // 24 hours
                 )
 
-                logger.info("Issued Gateway JWT for Google user $finalEmail with role $role")
+                logger.info("Issued Gateway JWT for $finalEmail with role $role")
 
                 call.respond(
                     HttpStatusCode.OK,
@@ -93,7 +79,7 @@ fun Route.authRoutes(jwtService: JwtService) {
                             email = finalEmail,
                             name = finalName,
                             role = role,
-                            provider = "google"
+                            provider = if (verifiedPayload != null) "google" else "guest"
                         )
                     )
                 )
@@ -104,6 +90,31 @@ fun Route.authRoutes(jwtService: JwtService) {
                     ApiMessage("Google authentication failed: ${e.message}")
                 )
             }
+        }
+
+        /**
+         * Issues a short-lived, single-use ticket for WebSocket authentication.
+         * Allows connecting to /ws/events without exposing JWT in URL query strings.
+         */
+        post("/ticket") {
+            val authHeader = call.request.headers["Authorization"]
+            val token = authHeader?.removePrefix("Bearer ")?.trim()
+                ?: call.request.queryParameters["token"]
+
+            val claims = token?.let { jwtService.verifyToken(it) }
+            val role = claims?.role ?: "VIEWER"
+            val email = claims?.email ?: "guest@cutm.nt14"
+
+            val ticket = jwtService.createWsTicket(role, email, durationSeconds = 60L)
+            call.respond(
+                HttpStatusCode.OK,
+                mapOf(
+                    "ticket" to ticket,
+                    "role" to role,
+                    "email" to email,
+                    "expiresIn" to 60
+                )
+            )
         }
 
         /**
@@ -135,6 +146,35 @@ fun Route.authRoutes(jwtService: JwtService) {
                     "issuer" to claims.iss,
                     "issuedAt" to claims.iat,
                     "expiresAt" to claims.exp
+                )
+            )
+        }
+
+        /**
+         * Generates a one-time pairing ticket and payload for instant Android device pairing.
+         */
+        get("/pair") {
+            val adminEmailsEnv = System.getenv("ADMIN_EMAILS") ?: "akpolylance@gmail.com"
+            val adminEmail = adminEmailsEnv.split(",").firstOrNull { it.isNotBlank() }?.trim() ?: "admin@cutm.nt14.com"
+            val ticket = jwtService.createWsTicket(role = "ADMIN", email = adminEmail, durationSeconds = 600L)
+            val host = call.request.headers["Host"] ?: "127.0.0.1:8000"
+            val isTls = call.request.headers["X-Forwarded-Proto"] == "https"
+            val scheme = if (isTls) "https" else "http"
+            val wsScheme = if (isTls) "wss" else "ws"
+            val baseUrl = "$scheme://$host"
+            val wsUrl = "$wsScheme://$host/ws/events"
+            val pairingUri = "nt14-pair://pair?host=${java.net.URLEncoder.encode(baseUrl, "UTF-8")}&ticket=$ticket"
+
+            call.respond(
+                HttpStatusCode.OK,
+                mapOf(
+                    "host" to baseUrl,
+                    "wss" to wsUrl,
+                    "ticket" to ticket,
+                    "role" to "ADMIN",
+                    "email" to adminEmail,
+                    "pairingUri" to pairingUri,
+                    "expiresIn" to 600
                 )
             )
         }

@@ -1,36 +1,46 @@
 package com.cutm.nt14.ui.abuse
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.cutm.nt14.data.remote.model.ActiveBanDto
 import com.cutm.nt14.domain.model.UserRole
 import com.cutm.nt14.ui.components.*
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.ceil
 
 @Composable
 fun IncidentScreen(
     viewModel: IncidentViewModel = hiltViewModel()
 ) {
-    val abuseEvents by viewModel.abuseEvents.collectAsState()
-    val ddosIncidents by viewModel.ddosIncidents.collectAsState()
+    val activeBans by viewModel.activeBans.collectAsState()
+    val incidents by viewModel.incidents.collectAsState()
+    val isOffline by viewModel.isOffline.collectAsState()
     val userRole by viewModel.userRole.collectAsState()
-    var ipToBlacklist by remember { mutableStateOf<String?>(null) }
+    val actionMessage by viewModel.actionMessage.collectAsState()
 
+    var clientToUnban by remember { mutableStateOf<ActiveBanDto?>(null) }
     val isAdmin = userRole == UserRole.ADMIN
 
     GlassBackground {
@@ -62,8 +72,8 @@ fun IncidentScreen(
                     }
 
                     GlassBadge(
-                        text = if (ddosIncidents.isEmpty() && abuseEvents.isEmpty()) "ALL SECURE" else "THREATS DETECTED",
-                        color = if (ddosIncidents.isEmpty() && abuseEvents.isEmpty()) PolySuccess else PolyDanger
+                        text = if (isOffline) "OFFLINE (UNKNOWN)" else if (activeBans.isNotEmpty()) "${activeBans.size} ACTIVE BANS" else "ALL CLEAR",
+                        color = if (isOffline) PolyWarning else if (activeBans.isNotEmpty()) PolyDanger else PolySuccess
                     )
                 }
             }
@@ -73,15 +83,88 @@ fun IncidentScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(
                     bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
                 )
             ) {
-                // DDoS Incidents
+                if (!actionMessage.isNullOrBlank()) {
+                    item {
+                        GlassCard(backgroundColor = PolyPrimaryLight) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = actionMessage!!,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = PolyPrimaryDark
+                                )
+                                TextButton(onClick = { viewModel.clearActionMessage() }) {
+                                    Text("Dismiss", color = PolyPrimary, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Status Header Card
+                item {
+                    val statusText = if (isOffline) {
+                        "Gateway Disconnected • Security integrity cannot be confirmed"
+                    } else if (activeBans.isNotEmpty()) {
+                        "${activeBans.size} Malicious clients currently blacklisted by Anomaly Engine"
+                    } else {
+                        "No anomalous brute force or DDoS floods currently detected"
+                    }
+
+                    GlassCard(
+                        backgroundColor = if (isOffline) Color(0xFFFFFBEB) else if (activeBans.isNotEmpty()) PolyDangerBg else PolySuccessBg,
+                        borderBrush = GlassBorderSubtle
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isOffline) PolyWarning else if (activeBans.isNotEmpty()) PolyDanger else PolySuccess),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (activeBans.isNotEmpty()) Icons.Default.Warning else Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = if (isOffline) "STATUS: UNKNOWN (OFFLINE)" else if (activeBans.isNotEmpty()) "THREAT ENFORCEMENT ACTIVE" else "ALL PROTOCOLS SECURE",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isOffline) PolyWarning else if (activeBans.isNotEmpty()) PolyDanger else PolySuccess,
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = statusText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = PolyTextPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Active Bans Section
                 item {
                     Text(
-                        text = "LIVE DDOS SPIKE DETECTIONS (${ddosIncidents.size})",
+                        text = "ACTIVE CLIENT BANS (${activeBans.size})",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = PolyTextSecondary,
@@ -89,78 +172,99 @@ fun IncidentScreen(
                     )
                 }
 
-                if (ddosIncidents.isEmpty()) {
+                if (activeBans.isEmpty()) {
                     item {
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            backgroundColor = Color.White.copy(alpha = 0.85f),
+                            backgroundColor = Color.White.copy(alpha = 0.90f),
                             elevation = 1.dp
                         ) {
-                            Text(
-                                text = "No active DDoS attacks detected across gateway endpoints.",
-                                color = PolyTextSecondary,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                } else {
-                    items(ddosIncidents) { incident ->
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            backgroundColor = Color.White.copy(alpha = 0.92f),
-                            elevation = 2.dp
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = null,
-                                            tint = PolyDanger,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "DDoS: ${incident.endpointId}",
-                                            color = PolyTextPrimary,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        text = "Spike: ${incident.requestSpike} reqs • Severity: ${incident.severity}",
-                                        color = PolyTextSecondary,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(PolyDangerBg)
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = incident.status,
-                                        color = PolyDanger,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
-                                }
+                                Text(
+                                    text = "No Active Bans",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = PolyTextPrimary
+                                )
+                                Text(
+                                    text = "No clients are banned by the gateway anomaly detector.",
+                                    fontSize = 11.sp,
+                                    color = PolyTextSecondary
+                                )
                             }
                         }
                     }
                 }
 
-                // Abuse Events
+                items(activeBans, key = { it.clientId }) { ban ->
+                    val now = System.currentTimeMillis()
+                    val remainingSec = ceil((ban.expiresAt - now) / 1000.0).toLong().coerceAtLeast(0L)
+
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = Color.White.copy(alpha = 0.94f),
+                        elevation = 2.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = ban.clientId,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = PolyDanger,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(PolyDangerBg)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "${remainingSec}s left",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = PolyDanger
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = ban.reason,
+                                    fontSize = 12.sp,
+                                    color = PolyTextSecondary
+                                )
+                            }
+
+                            if (isAdmin) {
+                                PillActionButton(
+                                    text = "Unban",
+                                    icon = Icons.Default.Check,
+                                    onClick = { clientToUnban = ban }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Incident Feed Section
                 item {
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "ABUSE & IP BLOCK LOGS (${abuseEvents.size})",
+                        text = "SECURITY INCIDENT FEED (${incidents.size})",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = PolyTextSecondary,
@@ -168,94 +272,113 @@ fun IncidentScreen(
                     )
                 }
 
-                if (abuseEvents.isEmpty()) {
+                if (incidents.isEmpty()) {
                     item {
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            backgroundColor = Color.White.copy(alpha = 0.85f),
+                            backgroundColor = Color.White.copy(alpha = 0.90f),
                             elevation = 1.dp
                         ) {
-                            Text(
-                                text = "Zero rate limit breaches or abusive IPs reported.",
-                                color = PolyTextSecondary,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                } else {
-                    items(abuseEvents) { event ->
-                        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(event.createdAt))
-                        GlassCard(
-                            modifier = Modifier.fillMaxWidth(),
-                            backgroundColor = Color.White.copy(alpha = 0.92f),
-                            elevation = 2.dp
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = event.eventType,
-                                        color = PolyTextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Risk: ${event.riskScore}/100 • Action: ${event.action} • $timeStr",
-                                        color = PolyTextSecondary,
-                                        fontSize = 12.sp
-                                    )
-                                }
-
-                                if (isAdmin) {
-                                    GlassButton(
-                                        text = "Blacklist",
-                                        accentColor = PolyDanger,
-                                        onClick = { ipToBlacklist = "IP from ${event.logId}" }
-                                    )
-                                } else {
-                                    Text(
-                                        text = event.action,
-                                        color = PolyWarning,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                }
+                                Text(
+                                    text = "Incident Feed Clean",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = PolyTextPrimary
+                                )
+                                Text(
+                                    text = "No severe anomalies or DDoS spikes logged.",
+                                    fontSize = 11.sp,
+                                    color = PolyTextSecondary
+                                )
                             }
                         }
                     }
                 }
 
-                item {
-                    Spacer(modifier = Modifier.height(84.dp))
+                items(incidents, key = { it.id }) { inc ->
+                    val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+                    val formatted = timeFormat.format(Date(inc.timestamp))
+
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = Color.White.copy(alpha = 0.94f),
+                        elevation = 1.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (inc.severity == "CRITICAL") PolyDangerBg else PolyWarningBg)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = inc.severity,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (inc.severity == "CRITICAL") PolyDanger else PolyWarning
+                                        )
+                                    }
+                                    Text(
+                                        text = inc.type,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = PolyTextPrimary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = inc.detail,
+                                    fontSize = 11.sp,
+                                    color = PolyTextSecondary
+                                )
+                            }
+
+                            Text(
+                                text = formatted,
+                                fontSize = 10.sp,
+                                color = PolyTextMuted,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        ipToBlacklist?.let { ip ->
+        clientToUnban?.let { ban ->
             AlertDialog(
-                onDismissRequest = { ipToBlacklist = null },
+                onDismissRequest = { clientToUnban = null },
                 containerColor = Color.White,
-                title = { Text("Blacklist IP Address", color = PolyTextPrimary, fontWeight = FontWeight.Bold) },
-                text = {
-                    Text(
-                        "Are you sure you want to permanently blacklist $ip on the gateway?",
-                        color = PolyTextSecondary
-                    )
-                },
+                title = { Text("Lift Ban", fontWeight = FontWeight.Bold, color = PolyTextPrimary) },
+                text = { Text("Are you sure you want to lift the active anomaly ban for client ${ban.clientId}?", color = PolyTextSecondary) },
                 confirmButton = {
                     Button(
-                        onClick = { ipToBlacklist = null },
-                        colors = ButtonDefaults.buttonColors(containerColor = PolyDanger)
+                        onClick = {
+                            viewModel.unbanClient(ban.clientId)
+                            clientToUnban = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PolyPrimary)
                     ) {
-                        Text("Confirm Blacklist", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("Unban", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { ipToBlacklist = null }) {
+                    TextButton(onClick = { clientToUnban = null }) {
                         Text("Cancel", color = PolyTextSecondary)
                     }
                 }

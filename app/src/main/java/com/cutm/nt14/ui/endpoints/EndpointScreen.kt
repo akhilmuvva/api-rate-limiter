@@ -24,7 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.cutm.nt14.data.local.entities.Endpoint
+import com.cutm.nt14.ui.endpoints.EndpointUiModel
 import com.cutm.nt14.domain.model.UserRole
 import com.cutm.nt14.ui.components.*
 
@@ -35,7 +35,7 @@ fun EndpointScreen(
     val endpoints by viewModel.endpoints.collectAsState()
     val userRole by viewModel.userRole.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
-    var endpointToDelete by remember { mutableStateOf<Endpoint?>(null) }
+    var endpointToDelete by remember { mutableStateOf<EndpointUiModel?>(null) }
 
     val isAdmin = userRole == UserRole.ADMIN
 
@@ -68,20 +68,11 @@ fun EndpointScreen(
                     }
 
                     if (isAdmin) {
-                        IconButton(
-                            onClick = { showAddDialog = true },
-                            modifier = Modifier
-                                .shadow(2.dp, CircleShape, ambientColor = Color(0x10000000))
-                                .clip(CircleShape)
-                                .background(PolyPrimary)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Add Endpoint",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+                        PillActionButton(
+                            text = "Add Route",
+                            icon = Icons.Default.Add,
+                            onClick = { showAddDialog = true }
+                        )
                     }
                 }
             }
@@ -214,7 +205,7 @@ fun EndpointScreen(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "Status: ${endpoint.status} • Owner: ${endpoint.ownerEmail}",
+                                    text = "Policy: ${endpoint.limitPerMin} req/min • Burst: ${endpoint.burstLimit} • ${endpoint.action}",
                                     color = PolyTextMuted,
                                     fontSize = 11.sp
                                 )
@@ -224,6 +215,7 @@ fun EndpointScreen(
                                 IconButton(
                                     onClick = { endpointToDelete = endpoint },
                                     modifier = Modifier
+                                        .size(48.dp)
                                         .clip(CircleShape)
                                         .background(PolyDangerBg)
                                 ) {
@@ -231,7 +223,7 @@ fun EndpointScreen(
                                         imageVector = Icons.Default.Delete,
                                         contentDescription = "Delete",
                                         tint = PolyDanger,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }

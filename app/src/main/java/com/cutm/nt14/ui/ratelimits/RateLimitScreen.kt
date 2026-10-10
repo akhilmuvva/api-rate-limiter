@@ -1,13 +1,18 @@
 package com.cutm.nt14.ui.ratelimits
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,11 +20,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.cutm.nt14.data.local.entities.RateLimit
+import com.cutm.nt14.data.remote.model.RateLimitRuleDto
 import com.cutm.nt14.domain.model.UserRole
 import com.cutm.nt14.ui.components.*
 
@@ -29,7 +35,11 @@ fun RateLimitScreen(
 ) {
     val rules by viewModel.rules.collectAsState()
     val userRole by viewModel.userRole.collectAsState()
-    var ruleToDelete by remember { mutableStateOf<RateLimit?>(null) }
+    val actionMessage by viewModel.actionMessage.collectAsState()
+
+    var showAddDialog by remember { mutableStateOf(false) }
+    var ruleToEdit by remember { mutableStateOf<RateLimitRuleDto?>(null) }
+    var ruleToDelete by remember { mutableStateOf<RateLimitRuleDto?>(null) }
 
     val isAdmin = userRole == UserRole.ADMIN
 
@@ -61,10 +71,23 @@ fun RateLimitScreen(
                         )
                     }
 
-                    GlassBadge(
-                        text = if (isAdmin) "ADMIN" else "VIEWER",
-                        color = if (isAdmin) PolyPurple else PolyPrimary
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        GlassBadge(
+                            text = if (isAdmin) "ADMIN" else "VIEWER",
+                            color = if (isAdmin) PolyPurple else PolyPrimary
+                        )
+
+                        if (isAdmin) {
+                            PillActionButton(
+                                text = "Add Rule",
+                                icon = Icons.Default.Add,
+                                onClick = { showAddDialog = true }
+                            )
+                        }
+                    }
                 }
             }
         ) { padding ->
@@ -78,9 +101,31 @@ fun RateLimitScreen(
                     bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 120.dp
                 )
             ) {
+                if (!actionMessage.isNullOrBlank()) {
+                    item {
+                        GlassCard(backgroundColor = PolyPrimaryLight) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = actionMessage!!,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = PolyPrimaryDark
+                                )
+                                TextButton(onClick = { viewModel.clearActionMessage() }) {
+                                    Text("Dismiss", color = PolyPrimary, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Text(
-                        text = "${rules.size} ACTIVE GATEWAY ALGORITHMS (TOKEN BUCKET + SLIDING WINDOW)",
+                        text = "${rules.size} ACTIVE GATEWAY ENFORCEMENT RULES (TOKEN BUCKET + SLIDING WINDOW)",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = PolyTextSecondary,
@@ -98,172 +143,207 @@ fun RateLimitScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 32.dp, horizontal = 16.dp),
+                                    .padding(vertical = 32.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Lock,
                                     contentDescription = null,
                                     tint = PolyTextMuted,
-                                    modifier = Modifier.size(42.dp)
+                                    modifier = Modifier.size(48.dp)
                                 )
-                                Spacer(modifier = Modifier.height(10.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    text = "No Rate Limiting Rules Active",
+                                    text = "No Rules Active",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
                                     color = PolyTextPrimary
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "Standard gateway default threshold (60 req/min) is currently active across all endpoints.",
+                                    text = "Connect to gateway or configure your first rate limit rule.",
                                     fontSize = 12.sp,
-                                    color = PolyTextSecondary,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    color = PolyTextSecondary
                                 )
+                                if (isAdmin) {
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    GlassButton(
+                                        text = "+ Create Rule",
+                                        accentColor = PolyPrimary,
+                                        onClick = { showAddDialog = true }
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                items(rules) { rule ->
-                    val (actionColor, actionBg) = if (rule.action == "BLOCK") {
-                        PolyDanger to PolyDangerBg
-                    } else {
-                        PolyWarning to PolyWarningBg
-                    }
+                items(rules, key = { it.endpointId }) { rule ->
+                    val isBlock = rule.action.uppercase() == "BLOCK"
+                    val (actionCol, actionBg) = if (isBlock) PolyDanger to PolyDangerBg else PolyWarning to PolyWarningBg
 
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        backgroundColor = Color.White.copy(alpha = 0.90f),
+                        backgroundColor = Color.White.copy(alpha = 0.94f),
                         elevation = 2.dp
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = rule.endpointId,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = PolyTextPrimary,
+                                    fontFamily = FontFamily.Monospace
+                                )
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Box(
                                         modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .background(PolyPrimaryLight),
-                                        contentAlignment = Alignment.Center
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(actionBg)
+                                            .border(BorderStroke(1.dp, actionCol.copy(alpha = 0.35f)), RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 8.dp, vertical = 2.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Lock,
-                                            contentDescription = null,
-                                            tint = PolyPrimary,
-                                            modifier = Modifier.size(15.dp)
+                                        Text(
+                                            text = rule.action,
+                                            color = actionCol,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
                                         )
                                     }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = rule.endpointId,
-                                        color = PolyTextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                }
 
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    Column {
-                                        Text(
-                                            text = "RATE LIMIT",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyTextMuted
-                                        )
-                                        Text(
-                                            text = "${rule.limitPerMin} req/min",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyTextPrimary
-                                        )
-                                    }
-                                    Column {
-                                        Text(
-                                            text = "BURST TOKENS",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyTextMuted
-                                        )
-                                        Text(
-                                            text = "${rule.burstLimit} burst",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyPrimary
-                                        )
-                                    }
-                                    Column {
-                                        Text(
-                                            text = "ACTION",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyTextMuted
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(actionBg)
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    if (isAdmin) {
+                                        IconButton(
+                                            onClick = { ruleToEdit = rule },
+                                            modifier = Modifier.size(48.dp)
                                         ) {
-                                            Text(
-                                                text = rule.action,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = actionColor
+                                            Icon(
+                                                imageVector = Icons.Default.Edit,
+                                                contentDescription = "Edit",
+                                                tint = PolyPrimary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = { ruleToDelete = rule },
+                                            modifier = Modifier.size(48.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Delete",
+                                                tint = PolyDanger,
+                                                modifier = Modifier.size(18.dp)
                                             )
                                         }
                                     }
                                 }
                             }
 
-                            if (isAdmin) {
-                                IconButton(
-                                    onClick = { ruleToDelete = rule },
+                            // Policy Gauges
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Column(
                                     modifier = Modifier
-                                        .clip(CircleShape)
-                                        .background(PolyDangerBg)
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFFF8FAFC))
+                                        .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), RoundedCornerShape(10.dp))
+                                        .padding(10.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Delete Rule",
-                                        tint = PolyDanger,
-                                        modifier = Modifier.size(16.dp)
+                                    Text(
+                                        text = "SLIDING WINDOW",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = PolyTextSecondary,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${rule.limitPerMin} req/min",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = PolyPrimaryDark
+                                    )
+                                }
+
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFFF8FAFC))
+                                        .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), RoundedCornerShape(10.dp))
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = "TOKEN BUCKET BURST",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = PolyTextSecondary,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${rule.burstLimit} tokens",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = PolyPurple
                                     )
                                 }
                             }
                         }
                     }
                 }
-
-                item {
-                    Spacer(modifier = Modifier.height(84.dp))
-                }
             }
+        }
+
+        if (showAddDialog) {
+            RuleConfigDialog(
+                initialRule = null,
+                onDismiss = { showAddDialog = false },
+                onSave = { rule ->
+                    viewModel.addOrUpdateRule(rule)
+                    showAddDialog = false
+                }
+            )
+        }
+
+        ruleToEdit?.let { rule ->
+            RuleConfigDialog(
+                initialRule = rule,
+                onDismiss = { ruleToEdit = null },
+                onSave = { updated ->
+                    viewModel.addOrUpdateRule(updated)
+                    ruleToEdit = null
+                }
+            )
         }
 
         ruleToDelete?.let { rule ->
             AlertDialog(
                 onDismissRequest = { ruleToDelete = null },
                 containerColor = Color.White,
-                title = { Text("Disable Rate Limit", color = PolyTextPrimary, fontWeight = FontWeight.Bold) },
-                text = {
-                    Text(
-                        "Are you sure you want to disable rate limiting for ${rule.endpointId}?",
-                        color = PolyTextSecondary
-                    )
-                },
+                title = { Text("Remove Rate Limit Rule", fontWeight = FontWeight.Bold, color = PolyTextPrimary) },
+                text = { Text("Are you sure you want to delete policy enforcement on ${rule.endpointId}?", color = PolyTextSecondary) },
                 confirmButton = {
                     Button(
-                        onClick = { ruleToDelete = null },
+                        onClick = {
+                            viewModel.deleteRule(rule.endpointId)
+                            ruleToDelete = null
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = PolyDanger)
                     ) {
-                        Text("Disable", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("Delete", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
@@ -274,4 +354,124 @@ fun RateLimitScreen(
             )
         }
     }
+}
+
+@Composable
+fun RuleConfigDialog(
+    initialRule: RateLimitRuleDto?,
+    onDismiss: () -> Unit,
+    onSave: (RateLimitRuleDto) -> Unit
+) {
+    var endpoint by remember { mutableStateOf(initialRule?.endpointId ?: "/api/") }
+    var limitStr by remember { mutableStateOf((initialRule?.limitPerMin ?: 60).toString()) }
+    var burstStr by remember { mutableStateOf((initialRule?.burstLimit ?: 15).toString()) }
+    var action by remember { mutableStateOf(initialRule?.action ?: "BLOCK") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        title = {
+            Text(
+                text = if (initialRule == null) "Create Policy Rule" else "Edit Policy Rule",
+                fontWeight = FontWeight.Bold,
+                color = PolyTextPrimary
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = endpoint,
+                    onValueChange = { endpoint = it },
+                    label = { Text("Endpoint Path (e.g. /api/users)") },
+                    enabled = initialRule == null,
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = PolyTextPrimary,
+                        unfocusedTextColor = PolyTextPrimary,
+                        focusedBorderColor = PolyPrimary,
+                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = limitStr,
+                    onValueChange = { limitStr = it },
+                    label = { Text("Limit per Minute (Sliding Window)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = PolyTextPrimary,
+                        unfocusedTextColor = PolyTextPrimary,
+                        focusedBorderColor = PolyPrimary,
+                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = burstStr,
+                    onValueChange = { burstStr = it },
+                    label = { Text("Burst Capacity (Token Bucket)") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = PolyTextPrimary,
+                        unfocusedTextColor = PolyTextPrimary,
+                        focusedBorderColor = PolyPrimary,
+                        unfocusedBorderColor = Color(0xFFCBD5E1)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Action:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PolyTextSecondary)
+                    listOf("BLOCK", "ALERT").forEach { a ->
+                        val isSel = action == a
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSel) PolyPrimary else PolyPrimaryLight)
+                                .clickable { action = a }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = a,
+                                color = if (isSel) Color.White else PolyPrimaryDark,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val limit = limitStr.toIntOrNull() ?: 60
+                    val burst = burstStr.toIntOrNull() ?: 15
+                    if (endpoint.isNotBlank()) {
+                        onSave(
+                            RateLimitRuleDto(
+                                endpointId = endpoint.trim(),
+                                limitPerMin = limit,
+                                burstLimit = burst,
+                                action = action
+                            )
+                        )
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = PolyPrimary)
+            ) {
+                Text("Save Policy", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = PolyTextSecondary)
+            }
+        }
+    )
 }

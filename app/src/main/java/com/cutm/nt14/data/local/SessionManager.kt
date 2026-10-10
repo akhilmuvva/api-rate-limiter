@@ -64,7 +64,7 @@ class SessionManager @Inject constructor(
     suspend fun saveSession(
         email: String,
         name: String,
-        role: UserRole = UserRole.ADMIN,
+        role: UserRole = UserRole.VIEWER,
         photoUrl: String? = null,
         provider: String = "google",
         jwtToken: String? = null

@@ -1,6 +1,8 @@
 package com.cutm.nt14.gateway.core
 
+import com.cutm.nt14.gateway.models.ActiveBanDto
 import com.cutm.nt14.gateway.models.GatewayEvent
+import com.cutm.nt14.gateway.models.GatewayMetrics
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.websocket.Frame
 import kotlinx.coroutines.CoroutineScope
@@ -27,9 +29,64 @@ class WebSocketManager {
         ignoreUnknownKeys = true
     }
 
-    fun register(session: DefaultWebSocketServerSession) {
+    var historyManager: TrafficHistoryManager? = null
+    var rateLimiter: RateLimiter? = null
+
+    fun register(session: DefaultWebSocketServerSession, lastEventId: String? = null) {
         sessions.add(session)
-        logger.info("New WebSocket client connected. Active subscribers: ${sessions.size}")
+        logger.info("New WebSocket client connected (lastEventId=$lastEventId). Active subscribers: ${sessions.size}")
+
+        // Immediately send initial snapshot or replay events from lastEventId
+        scope.launch {
+            try {
+                val rules = rateLimiter?.getAllRules() ?: emptyList()
+                val bans = rateLimiter?.anomalyDetector?.getActiveBans()?.map { (ip, record) ->
+                    ActiveBanDto(clientId = ip, reason = record.reason, expiresAt = record.bannedUntil)
+                } ?: emptyList()
+
+                val missedLogs = if (!lastEventId.isNullOrBlank()) {
+                    historyManager?.getLogsSince(lastEventId)
+                } else null
+
+                if (missedLogs != null) {
+                    for (log in missedLogs) {
+                        val replayEvent = GatewayEvent(
+                            type = "request",
+                            id = log.id,
+                            ip = log.clientId,
+                            endpoint = log.path,
+                            method = log.method,
+                            status = log.status,
+                            latencyMs = log.latencyMs,
+                            decision = log.decision,
+                            timestamp = log.timestamp / 1000.0
+                        )
+                        session.send(Frame.Text(json.encodeToString(replayEvent)))
+                    }
+                    val metricsEvent = GatewayEvent(
+                        type = "metrics",
+                        metrics = historyManager?.calculateCurrentMetrics() ?: GatewayMetrics(),
+                        rules = rules,
+                        activeBans = bans
+                    )
+                    session.send(Frame.Text(json.encodeToString(metricsEvent)))
+                    logger.debug("Replayed ${missedLogs.size} events to resumed client since $lastEventId")
+                } else {
+                    val snapshot = historyManager?.buildSnapshot(rules, bans) ?: GatewayEvent(
+                        type = "snapshot",
+                        metrics = GatewayMetrics(),
+                        rules = rules,
+                        activeBans = bans,
+                        logs = emptyList(),
+                        incidents = emptyList()
+                    )
+                    session.send(Frame.Text(json.encodeToString(snapshot)))
+                    logger.debug("Sent initial state snapshot to new subscriber")
+                }
+            } catch (e: Exception) {
+                logger.warn("Failed to initialize subscriber session: ${e.message}")
+            }
+        }
     }
 
     fun unregister(session: DefaultWebSocketServerSession) {

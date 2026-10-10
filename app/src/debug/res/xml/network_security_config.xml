@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Debug Configuration: Permits cleartext specifically for local developer loopback and LAN testing -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Enforce HTTPS for known public cloud and Google endpoints even in debug -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <domain includeSubdomains="true">google.com</domain>
+        <domain includeSubdomains="true">firebaseio.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

@@ -1,8 +1,10 @@
 package com.cutm.nt14.gateway
 
 import com.cutm.nt14.gateway.core.JwtService
+import com.cutm.nt14.gateway.core.PolyLanceUpstream
 import com.cutm.nt14.gateway.core.RateLimitEvaluation
 import com.cutm.nt14.gateway.core.RateLimiter
+import com.cutm.nt14.gateway.core.TrafficHistoryManager
 import com.cutm.nt14.gateway.core.WebSocketManager
 import com.cutm.nt14.gateway.models.ApiMessage
 import com.cutm.nt14.gateway.models.GatewayEvent
@@ -25,37 +27,54 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.callloging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.origin
+import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
-import com.cutm.nt14.gateway.core.PolyLanceUpstream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
-import java.time.Duration
+import kotlin.random.Random
 
 data class ApiKeyPrincipal(val key: String) : Principal
 
 fun main() {
+    val port = System.getenv("PORT")?.toIntOrNull() ?: 8000
     val logger = LoggerFactory.getLogger("GatewayServer")
-    logger.info("Starting NT14 Rate Limiter Gateway on port 8000 (bind 0.0.0.0)...")
+    logger.info("Starting NT14 Rate Limiter Gateway on port $port (bind 0.0.0.0)...")
 
-    embeddedServer(Netty, port = 8000, host = "0.0.0.0", module = Application::module)
+    embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module)
         .start(wait = true)
 }
 
 fun Application.module() {
     val rateLimiter = RateLimiter()
     val webSocketManager = WebSocketManager()
+    val historyManager = TrafficHistoryManager()
     val jwtService = JwtService()
     val polyLanceUpstream = PolyLanceUpstream()
+    val serverStartTime = System.currentTimeMillis()
+
+    webSocketManager.historyManager = historyManager
+    webSocketManager.rateLimiter = rateLimiter
+
+    val initAdminTicket = jwtService.createWsTicket(role = "ADMIN", email = "admin@cutm.nt14.com", durationSeconds = 86400L)
+    LoggerFactory.getLogger("GatewayServer").info(
+        """
+        ================================================================================
+        [GATEWAY READY - SCAN / PAIR WITH ANDROID APP]
+        Pairing URI: nt14-pair://pair?host=http://127.0.0.1:8000&ticket=$initAdminTicket
+        Quick Pair Token: $initAdminTicket
+        Endpoints: GET /api/auth/pair | WS /ws/events?ticket=...
+        ================================================================================
+        """.trimIndent()
+    )
 
     // 1. Content Negotiation (JSON)
     install(ContentNegotiation) {
@@ -100,12 +119,18 @@ fun Application.module() {
         }
     }
 
-    // 5. Rate Limiting Gateway Interceptor (intercepting /api/* demo routes)
+    // 5. Rate Limiting Gateway Interceptor (intercepting /api/* demo and proxied routes)
     intercept(ApplicationCallPipeline.Plugins) {
         val path = call.request.path()
+        val isControlPlane = path.startsWith("/api/rules") ||
+                path.startsWith("/api/simulate") ||
+                path.startsWith("/api/auth") ||
+                path.startsWith("/api/stats") ||
+                path.startsWith("/api/logs") ||
+                path.startsWith("/api/bans") ||
+                path.startsWith("/api/reports")
 
-        // Apply rate limiting to demo API routes, excluding control-plane and auth endpoints
-        if (path.startsWith("/api/") && !path.startsWith("/api/rules") && !path.startsWith("/api/simulate") && !path.startsWith("/api/auth")) {
+        if (path.startsWith("/api/") && !isControlPlane) {
             val startTime = System.currentTimeMillis()
 
             // Resolve identity from JWT Bearer token if present
@@ -138,21 +163,41 @@ fun Application.module() {
             }
 
             if (!evaluation.allowed) {
-                val latency = System.currentTimeMillis() - startTime
+                val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
                 val eventType = if (evaluation.action == "BLOCK") "ip_blocked" else "blocked_request"
+                val decision = if (evaluation.action == "BLOCK") "sliding_window" else "token_bucket"
+
+                val log = historyManager.recordRequest(
+                    clientId = clientId,
+                    method = call.request.httpMethod.value,
+                    path = path,
+                    status = 429,
+                    latencyMs = latency,
+                    decision = decision
+                )
 
                 webSocketManager.broadcast(
                     GatewayEvent(
                         type = eventType,
+                        id = log.id,
                         ip = clientId,
                         endpoint = path,
+                        method = call.request.httpMethod.value,
                         status = 429,
-                        latencyMs = latency.coerceAtLeast(1L),
+                        latencyMs = latency,
+                        decision = decision,
                         timestamp = System.currentTimeMillis() / 1000.0
                     )
                 )
 
-                rateLimiter.anomalyDetector.recordAndInspect(clientId, path, 429, webSocketManager)
+                val ban = rateLimiter.anomalyDetector.recordAndInspect(clientId, path, 429, webSocketManager)
+                if (ban != null) {
+                    historyManager.recordIncident(
+                        type = "Anomaly Ban Triggered",
+                        severity = "HIGH",
+                        detail = "Client $clientId exceeded threshold on $path: ${ban.reason}"
+                    )
+                }
 
                 call.respond(
                     HttpStatusCode.TooManyRequests,
@@ -166,18 +211,30 @@ fun Application.module() {
             proceed()
 
             // After execution: emit telemetry for successful call
-            val latency = System.currentTimeMillis() - startTime
+            val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
             val status = call.response.status()?.value ?: 200
+
+            val log = historyManager.recordRequest(
+                clientId = clientId,
+                method = call.request.httpMethod.value,
+                path = path,
+                status = status,
+                latencyMs = latency,
+                decision = "allowed"
+            )
 
             rateLimiter.anomalyDetector.recordAndInspect(clientId, path, status, webSocketManager)
 
             webSocketManager.broadcast(
                 GatewayEvent(
                     type = "request",
+                    id = log.id,
                     ip = clientId,
                     endpoint = path,
+                    method = call.request.httpMethod.value,
                     status = status,
-                    latencyMs = latency.coerceAtLeast(1L),
+                    latencyMs = latency,
+                    decision = "allowed",
                     timestamp = System.currentTimeMillis() / 1000.0
                 )
             )
@@ -190,35 +247,118 @@ fun Application.module() {
     // 6. Routing Assembly
     routing {
         get("/") {
-            call.respond(ApiMessage("NT14 Rate Limiter Gateway (Kotlin/Ktor) running on port 8000"))
+            call.respond(ApiMessage("NT14 Rate Limiter Gateway (Kotlin/Ktor) running on port ${System.getenv("PORT") ?: "8000"}"))
         }
 
         get("/health") {
-            call.respond(HealthResponse("UP", webSocketManager.activeSubscriberCount()))
+            call.respond(
+                HealthResponse(
+                    status = "UP",
+                    subscribers = webSocketManager.activeSubscriberCount(),
+                    uptimeMs = System.currentTimeMillis() - serverStartTime,
+                    metrics = historyManager.calculateCurrentMetrics()
+                )
+            )
         }
 
         authRoutes(jwtService)
         demoRoutes()
-        ruleRoutes(rateLimiter)
-        simulateRoutes(rateLimiter, webSocketManager)
-        eventsWebSocket(webSocketManager)
+        ruleRoutes(rateLimiter, webSocketManager, historyManager, jwtService, serverStartTime)
+        simulateRoutes(rateLimiter, webSocketManager, historyManager, jwtService)
+        eventsWebSocket(webSocketManager, jwtService)
     }
 
-    // 7. Background Autonomous Maintenance & Upstream Keep-Alive Loop
+    // 7. Background Autonomous Maintenance Loop
     launch(Dispatchers.Default) {
         var cycle = 0
         while (isActive) {
             delay(30_000L) // Runs every 30 seconds
             cycle++
             try {
-                // Periodically prune idle rate limiters and expired anomaly bans
                 rateLimiter.cleanupIdleLimiters()
-
-                // Every 2 minutes (every 4 cycles), keep upstream PolyLance warm
                 if (cycle % 4 == 0) {
                     polyLanceUpstream.keepAlive()
                 }
             } catch (_: Exception) {
+            }
+        }
+    }
+
+    // 8. 1-Second Metrics Broadcast Ticker
+    launch(Dispatchers.Default) {
+        while (isActive) {
+            delay(1000L)
+            try {
+                if (webSocketManager.activeSubscriberCount() > 0) {
+                    val metrics = historyManager.calculateCurrentMetrics()
+                    webSocketManager.broadcast(
+                        GatewayEvent(
+                            type = "metrics",
+                            timestamp = System.currentTimeMillis() / 1000.0,
+                            metrics = metrics
+                        )
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    // 9. Optional Demo Traffic Generator (Ensures Live Dashboard Data on Fresh Start)
+    val isDemoTrafficEnabled = System.getenv("DEMO_TRAFFIC")?.toBoolean() ?: true
+    if (isDemoTrafficEnabled) {
+        launch(Dispatchers.Default) {
+            delay(2000L) // Initial warm up delay
+            val demoEndpoints = listOf(
+                "/api/polylance/escrows",
+                "/api/polylance/talents",
+                "/api/users",
+                "/api/orders",
+                "/api/products"
+            )
+            val demoIps = listOf(
+                "192.168.1.10",
+                "192.168.1.25",
+                "10.0.0.5",
+                "172.16.52.20"
+            )
+
+            while (isActive) {
+                delay(Random.nextLong(1500L, 3000L))
+                try {
+                    val endpoint = demoEndpoints[Random.nextInt(demoEndpoints.size)]
+                    val ip = demoIps[Random.nextInt(demoIps.size)]
+                    val start = System.currentTimeMillis()
+
+                    val eval = rateLimiter.evaluate(endpoint, ip)
+                    val status = if (eval.allowed) 200 else 429
+                    val latency = Random.nextLong(18, 55)
+                    val decision = if (eval.allowed) "allowed" else if (eval.action == "BLOCK") "sliding_window" else "token_bucket"
+
+                    val log = historyManager.recordRequest(
+                        clientId = ip,
+                        method = "GET",
+                        path = endpoint,
+                        status = status,
+                        latencyMs = latency,
+                        decision = decision
+                    )
+
+                    webSocketManager.broadcast(
+                        GatewayEvent(
+                            type = if (eval.allowed) "request" else "blocked_request",
+                            id = log.id,
+                            ip = ip,
+                            endpoint = endpoint,
+                            method = "GET",
+                            status = status,
+                            latencyMs = latency,
+                            decision = decision,
+                            timestamp = start / 1000.0
+                        )
+                    )
+                } catch (_: Exception) {
+                }
             }
         }
     }

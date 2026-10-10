@@ -5,17 +5,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -25,11 +27,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.cutm.nt14.data.repository.GatewayRepository
 import com.cutm.nt14.ui.abuse.IncidentScreen
 import com.cutm.nt14.ui.biometric.BiometricLockScreen
-import com.cutm.nt14.ui.components.AppleBlue
-import com.cutm.nt14.ui.components.AppleCyan
 import com.cutm.nt14.ui.components.GlassBackgroundDark
+import com.cutm.nt14.ui.components.GlobalConnectionBanner
 import com.cutm.nt14.ui.dashboard.DashboardScreen
 import com.cutm.nt14.ui.endpoints.EndpointScreen
 import com.cutm.nt14.ui.login.LoginScreen
@@ -45,7 +47,7 @@ sealed class Screen(val route: String, val title: String = "", val icon: android
     object Login : Screen("login")
     object BiometricLock : Screen("biometric_lock")
     object Dashboard : Screen("dashboard", "Dashboard", Icons.Default.Home)
-    object Endpoints : Screen("endpoints", "Endpoints", Icons.Default.List)
+    object Endpoints : Screen("endpoints", "Endpoints", Icons.AutoMirrored.Filled.List)
     object Logs : Screen("logs", "Logs", Icons.Default.Info)
     object RateLimits : Screen("ratelimits", "Limits", Icons.Default.Settings)
     object Incidents : Screen("incidents", "Security", Icons.Default.Warning)
@@ -53,10 +55,14 @@ sealed class Screen(val route: String, val title: String = "", val icon: android
 }
 
 @Composable
-fun NT14NavHost() {
+fun NT14NavHost(repository: GatewayRepository) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+
+    val bans by repository.bans.collectAsState()
+    val incidents by repository.incidents.collectAsState()
+    val securityBadgeCount = bans.size + incidents.size
 
     val bottomNavScreens = listOf(Screen.Dashboard, Screen.Endpoints, Screen.Logs, Screen.RateLimits, Screen.Incidents, Screen.Reports)
 
@@ -70,7 +76,7 @@ fun NT14NavHost() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     Row(
                         modifier = Modifier
@@ -105,16 +111,33 @@ fun NT14NavHost() {
                                             restoreState = true
                                         }
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        imageVector = screen.icon!!,
-                                        contentDescription = screen.title,
-                                        tint = if (selected) com.cutm.nt14.ui.components.PolyPrimary else com.cutm.nt14.ui.components.PolyTextSecondary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                    BadgedBox(
+                                        badge = {
+                                            if (screen == Screen.Incidents && securityBadgeCount > 0) {
+                                                Badge(
+                                                    containerColor = com.cutm.nt14.ui.components.PolyDanger,
+                                                    contentColor = Color.White
+                                                ) {
+                                                    Text(
+                                                        text = securityBadgeCount.toString(),
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = screen.icon!!,
+                                            contentDescription = screen.title,
+                                            tint = if (selected) com.cutm.nt14.ui.components.PolyPrimary else com.cutm.nt14.ui.components.PolyTextSecondary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                     Text(
                                         text = screen.title,
                                         fontSize = 10.sp,
@@ -129,74 +152,88 @@ fun NT14NavHost() {
             }
         }
     ) { innerPadding ->
-        NavHost(
-            navController = navController, 
-            startDestination = Screen.Splash.route,
-            modifier = Modifier.padding(innerPadding)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
         ) {
-            composable(Screen.Splash.route) {
-                val viewModel: SplashViewModel = hiltViewModel()
-                SplashScreen(
-                    viewModel = viewModel,
-                    onNavigateToLogin = {
-                        navController.navigate(Screen.Login.route) {
-                            popUpTo(Screen.Splash.route) { inclusive = true }
-                        }
-                    },
-                    onNavigateToBiometricLock = {
-                        navController.navigate(Screen.BiometricLock.route) {
-                            popUpTo(Screen.Splash.route) { inclusive = true }
-                        }
-                    },
-                    onNavigateToDashboard = {
-                        navController.navigate(Screen.Dashboard.route) {
-                            popUpTo(Screen.Splash.route) { inclusive = true }
-                        }
-                    }
-                )
+            if (currentRoute != Screen.Splash.route && 
+                currentRoute != Screen.Login.route && 
+                currentRoute != Screen.BiometricLock.route) {
+                GlobalConnectionBanner(repository)
             }
 
-            composable(Screen.BiometricLock.route) {
-                BiometricLockScreen(
-                    onUnlockSuccess = {
-                        navController.navigate(Screen.Dashboard.route) {
-                            popUpTo(Screen.BiometricLock.route) { inclusive = true }
-                        }
-                    },
-                    onSignOut = {
-                        navController.navigate(Screen.Login.route) {
-                            popUpTo(Screen.BiometricLock.route) { inclusive = true }
-                        }
+            Box(modifier = Modifier.weight(1f)) {
+                NavHost(
+                    navController = navController, 
+                    startDestination = Screen.Splash.route,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    composable(Screen.Splash.route) {
+                        val viewModel: SplashViewModel = hiltViewModel()
+                        SplashScreen(
+                            viewModel = viewModel,
+                            onNavigateToLogin = {
+                                navController.navigate(Screen.Login.route) {
+                                    popUpTo(Screen.Splash.route) { inclusive = true }
+                                }
+                            },
+                            onNavigateToBiometricLock = {
+                                navController.navigate(Screen.BiometricLock.route) {
+                                    popUpTo(Screen.Splash.route) { inclusive = true }
+                                }
+                            },
+                            onNavigateToDashboard = {
+                                navController.navigate(Screen.Dashboard.route) {
+                                    popUpTo(Screen.Splash.route) { inclusive = true }
+                                }
+                            }
+                        )
                     }
-                )
-            }
 
-            composable(Screen.Login.route) {
-                val viewModel: LoginViewModel = hiltViewModel()
-                LoginScreen(
-                    viewModel = viewModel,
-                    onLoginSuccess = {
-                        navController.navigate(Screen.Dashboard.route) {
-                            popUpTo(Screen.Login.route) { inclusive = true }
-                        }
+                    composable(Screen.BiometricLock.route) {
+                        BiometricLockScreen(
+                            onUnlockSuccess = {
+                                navController.navigate(Screen.Dashboard.route) {
+                                    popUpTo(Screen.BiometricLock.route) { inclusive = true }
+                                }
+                            },
+                            onSignOut = {
+                                navController.navigate(Screen.Login.route) {
+                                    popUpTo(Screen.BiometricLock.route) { inclusive = true }
+                                }
+                            }
+                        )
                     }
-                )
-            }
 
-            composable(Screen.Dashboard.route) {
-                DashboardScreen(
-                    onLogout = {
-                        navController.navigate(Screen.Login.route) {
-                            popUpTo(Screen.Dashboard.route) { inclusive = true }
-                        }
+                    composable(Screen.Login.route) {
+                        val viewModel: LoginViewModel = hiltViewModel()
+                        LoginScreen(
+                            viewModel = viewModel,
+                            onLoginSuccess = {
+                                navController.navigate(Screen.Dashboard.route) {
+                                    popUpTo(Screen.Login.route) { inclusive = true }
+                                }
+                            }
+                        )
                     }
-                )
+
+                    composable(Screen.Dashboard.route) {
+                        DashboardScreen(
+                            onLogout = {
+                                navController.navigate(Screen.Login.route) {
+                                    popUpTo(Screen.Dashboard.route) { inclusive = true }
+                                }
+                            }
+                        )
+                    }
+                    composable(Screen.Endpoints.route) { EndpointScreen() }
+                    composable(Screen.Logs.route) { LogScreen() }
+                    composable(Screen.RateLimits.route) { RateLimitScreen() }
+                    composable(Screen.Incidents.route) { IncidentScreen() }
+                    composable(Screen.Reports.route) { ReportScreen() }
+                }
             }
-            composable(Screen.Endpoints.route) { EndpointScreen() }
-            composable(Screen.Logs.route) { LogScreen() }
-            composable(Screen.RateLimits.route) { RateLimitScreen() }
-            composable(Screen.Incidents.route) { IncidentScreen() }
-            composable(Screen.Reports.route) { ReportScreen() }
         }
     }
 }

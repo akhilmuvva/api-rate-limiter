@@ -28,11 +28,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.cutm.nt14.data.local.entities.RequestLog
 import com.cutm.nt14.data.remote.GatewayConnectionState
 import com.cutm.nt14.data.remote.model.PolyLanceAttestation
 import com.cutm.nt14.data.remote.model.PolyLanceEscrow
 import com.cutm.nt14.data.remote.model.PolyLanceTalent
+import com.cutm.nt14.data.remote.model.RequestLogDto
 import com.cutm.nt14.domain.detector.OptimizationResult
 import com.cutm.nt14.domain.model.UserRole
 import com.cutm.nt14.ui.components.*
@@ -48,8 +48,8 @@ fun DashboardScreen(
     val polyLanceState by viewModel.polyLanceState.collectAsState()
     val userEmail by viewModel.userEmail.collectAsState()
     val userName by viewModel.userName.collectAsState()
-    val userJwtToken by viewModel.userJwtToken.collectAsState()
     var showHostDialog by remember { mutableStateOf(false) }
+    var showPairDialog by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = remember(context) {
@@ -68,10 +68,10 @@ fun DashboardScreen(
                 uiState = uiState,
                 polyLanceState = polyLanceState,
                 userEmail = userEmail,
-                userJwtToken = userJwtToken,
                 activity = activity,
                 onLogout = onLogout,
-                onShowHostDialog = { showHostDialog = true }
+                onShowHostDialog = { showHostDialog = true },
+                onShowPairDialog = { showPairDialog = true }
             )
         } else {
             ViewerDashboardContent(
@@ -80,11 +80,25 @@ fun DashboardScreen(
                 polyLanceState = polyLanceState,
                 userEmail = userEmail,
                 userName = userName,
-                userJwtToken = userJwtToken,
                 activity = activity,
-                onLogout = onLogout
+                onLogout = onLogout,
+                onShowPairDialog = { showPairDialog = true }
             )
         }
+    }
+
+    // Gateway Pairing QR / Token Dialog
+    if (showPairDialog) {
+        GatewayPairDialog(
+            currentHost = uiState.connectedHost,
+            onDismiss = { showPairDialog = false },
+            onPair = { pairInput ->
+                viewModel.pairWithGateway(pairInput)
+            },
+            onFetchFromServer = { host ->
+                viewModel.fetchPairingFromServer(host)
+            }
+        )
     }
 
     // Host Configuration Dialog (Admin only)
@@ -154,10 +168,10 @@ fun AdminDashboardContent(
     uiState: DashboardUiState,
     polyLanceState: PolyLanceInspectorUiState,
     userEmail: String?,
-    userJwtToken: String? = null,
     activity: android.app.Activity?,
     onLogout: () -> Unit,
-    onShowHostDialog: () -> Unit
+    onShowHostDialog: () -> Unit,
+    onShowPairDialog: () -> Unit
 ) {
     Scaffold(
         containerColor = Color.Transparent,
@@ -183,12 +197,10 @@ fun AdminDashboardContent(
                                 fontFamily = FontFamily.SansSerif,
                                 letterSpacing = 1.2.sp
                             )
-                            Box(modifier = Modifier.clickable { viewModel.toggleRole() }) {
-                                GlassBadge(
-                                    text = "ADMIN",
-                                    color = PolyPrimary
-                                )
-                            }
+                            GlassBadge(
+                                text = "ADMIN",
+                                color = PolyPrimary
+                            )
                         }
                         Text(
                             text = "Gateway Dashboard",
@@ -209,56 +221,40 @@ fun AdminDashboardContent(
                     }
 
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Scan Gateway QR Pill Button
+                        PillActionButton(
+                            text = "Scan QR",
+                            icon = Icons.Default.Share,
+                            onClick = onShowPairDialog
+                        )
+
                         // Gateway Host Switcher Button
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Color.White.copy(alpha = 0.85f))
-                                .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), RoundedCornerShape(12.dp))
-                                .clickable { onShowHostDialog() }
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Settings,
-                                    contentDescription = "Host Settings",
-                                    tint = PolyTextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "Host",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = PolyTextSecondary
-                                )
-                            }
-                        }
+                        PillActionButton(
+                            text = "Host",
+                            icon = Icons.Default.Settings,
+                            onClick = onShowHostDialog
+                        )
 
                         // Logout Button
-                        Box(
+                        IconButton(
+                            onClick = {
+                                viewModel.logout(activity)
+                                onLogout()
+                            },
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
                                 .background(Color.White.copy(alpha = 0.85f))
                                 .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), CircleShape)
-                                .clickable {
-                                    viewModel.logout(activity)
-                                    onLogout()
-                                },
-                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                                 contentDescription = "Logout",
                                 tint = PolyDanger,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -340,11 +336,18 @@ fun AdminDashboardContent(
                             }
 
                             if (!isConnected) {
-                                GlassButton(
-                                    text = "Reconnect",
-                                    accentColor = PolyPrimary,
-                                    onClick = { viewModel.reconnect() }
-                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    PillActionButton(
+                                        text = "Scan QR",
+                                        icon = Icons.Default.Share,
+                                        onClick = onShowPairDialog
+                                    )
+                                    PillActionButton(
+                                        text = "Reconnect",
+                                        icon = Icons.Default.Refresh,
+                                        onClick = { viewModel.reconnect() }
+                                    )
+                                }
                             }
                         }
                     }
@@ -385,7 +388,97 @@ fun AdminDashboardContent(
                     }
                 }
 
-                // Security & Anti-Tamper Card
+                // 2. Prominent Real-Time Burst Simulator & Action Deck (Above the fold)
+                item {
+                    GlassCard(
+                        backgroundColor = Color.White.copy(alpha = 0.95f),
+                        borderBrush = BorderStroke(1.5.dp, PolyWarning.copy(alpha = 0.6f)).brush
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(26.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFFEF3C7)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Simulator",
+                                            tint = PolyWarning,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "TRAFFIC BURST SIMULATOR",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = PolyTextPrimary,
+                                            fontFamily = FontFamily.SansSerif,
+                                            letterSpacing = 1.sp
+                                        )
+                                        Text(
+                                            text = "Inject real-time load against rate limiter engine",
+                                            fontSize = 10.sp,
+                                            color = PolyTextSecondary
+                                        )
+                                    }
+                                }
+
+                                GlassBadge(
+                                    text = if (polyLanceState.isBursting) "BLASTING..." else "READY",
+                                    color = if (polyLanceState.isBursting) PolyDanger else PolySuccess
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RingActionButton(
+                                    label = "Burst 25",
+                                    icon = Icons.Default.PlayArrow,
+                                    ringProgress = if (polyLanceState.isBursting) 0.8f else 0.4f,
+                                    ringBrush = androidx.compose.ui.graphics.SolidColor(Nt14Ui.Warn),
+                                    onClick = { viewModel.simulateTraffic("/api/polylance/escrows", 25, 20.0, "burst") }
+                                )
+                                RingActionButton(
+                                    label = "Attack 50",
+                                    icon = Icons.Default.Warning,
+                                    ringProgress = if (polyLanceState.isBursting) 1.0f else 0.7f,
+                                    ringBrush = androidx.compose.ui.graphics.SolidColor(Nt14Ui.Blocked),
+                                    onClick = { viewModel.simulateTraffic("/api/polylance/escrows", 50, 40.0, "attack") }
+                                )
+                                RingActionButton(
+                                    label = "Test GET",
+                                    icon = Icons.Default.Check,
+                                    ringProgress = 0.25f,
+                                    ringBrush = androidx.compose.ui.graphics.SolidColor(Nt14Ui.Accent),
+                                    onClick = { viewModel.fireTestRequest("/api/polylance/escrows") }
+                                )
+                                RingActionButton(
+                                    label = "Clear",
+                                    icon = Icons.Default.Delete,
+                                    ringProgress = null,
+                                    onClick = { viewModel.clearLogs() }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. Security & Anti-Tamper Card
                 item {
                     val sec = uiState.securityReport
                     val isConnected = uiState.connectionState is GatewayConnectionState.Connected
@@ -461,9 +554,9 @@ fun AdminDashboardContent(
                                     }
                                 }
 
-                                GlassButton(
+                                PillActionButton(
                                     text = "Rescan",
-                                    accentColor = PolyPrimary,
+                                    icon = Icons.Default.Lock,
                                     onClick = { viewModel.rescanSecurityIntegrity() }
                                 )
                             }
@@ -497,41 +590,6 @@ fun AdminDashboardContent(
                                 )
                             }
                         }
-                    }
-                }
-
-                // 3. Real-Time Action Control Deck
-                item {
-                    Text(
-                        text = "LIVE GATEWAY ACTIONS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = PolyTextSecondary,
-                        letterSpacing = 1.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        GlassButton(
-                            text = "Test GET",
-                            accentColor = PolyPrimary,
-                            onClick = { viewModel.fireTestRequest("/api/polylance/escrows") },
-                            modifier = Modifier.weight(1f)
-                        )
-                        GlassButton(
-                            text = "Simulate Burst",
-                            accentColor = PolyWarning,
-                            onClick = { viewModel.simulateAttackBurst() },
-                            modifier = Modifier.weight(1.1f)
-                        )
-                        GlassButton(
-                            text = "Clear Logs",
-                            accentColor = PolyDanger,
-                            onClick = { viewModel.clearLogs() },
-                            modifier = Modifier.weight(0.9f)
-                        )
                     }
                 }
 
@@ -652,7 +710,7 @@ fun AdminDashboardContent(
                         }
                     }
                 } else {
-                    items(uiState.recentLogs, key = { it.logId }) { log ->
+                    items(uiState.recentLogs, key = { it.id }) { log ->
                         WhiteLogItemCard(log)
                     }
                 }
@@ -672,9 +730,9 @@ fun ViewerDashboardContent(
     polyLanceState: PolyLanceInspectorUiState,
     userEmail: String?,
     userName: String?,
-    userJwtToken: String? = null,
     activity: android.app.Activity?,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onShowPairDialog: () -> Unit
 ) {
     Scaffold(
         containerColor = Color.Transparent,
@@ -700,12 +758,10 @@ fun ViewerDashboardContent(
                             fontFamily = FontFamily.SansSerif,
                             letterSpacing = 1.2.sp
                         )
-                        Box(modifier = Modifier.clickable { viewModel.toggleRole() }) {
-                            GlassBadge(
-                                text = "VIEWER",
-                                color = PolyTextSecondary
-                            )
-                        }
+                        GlassBadge(
+                            text = "VIEWER",
+                            color = PolyTextSecondary
+                        )
                     }
                     Text(
                         text = "Viewer Dashboard",
@@ -725,25 +781,36 @@ fun ViewerDashboardContent(
                     }
                 }
 
-                // Minimalist Logout Button (No Host Settings Button)
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.88f))
-                        .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), CircleShape)
-                        .clickable {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Pair Gateway Pill Button
+                    PillActionButton(
+                        text = "Scan QR",
+                        icon = Icons.Default.Share,
+                        onClick = onShowPairDialog
+                    )
+
+                    // Logout Button
+                    IconButton(
+                        onClick = {
                             viewModel.logout(activity)
                             onLogout()
                         },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                        contentDescription = "Logout",
-                        tint = PolyDanger,
-                        modifier = Modifier.size(18.dp)
-                    )
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.88f))
+                            .border(BorderStroke(1.dp, Color(0xFFE2E8F0)), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = "Logout",
+                            tint = PolyDanger,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }
@@ -874,8 +941,19 @@ fun ViewerDashboardContent(
                                     fontFamily = FontFamily.SansSerif,
                                     color = PolyTextPrimary
                                 )
+                                val availabilityRatio = if (uiState.totalRequests > 0) {
+                                    ((uiState.totalRequests - uiState.throttledCount).toDouble() / uiState.totalRequests.toDouble()) * 100.0
+                                } else 100.0
+                                val availabilityText = if (isConnected) {
+                                    "Realtime QoS: %.2f%% Success • %.1f RPS".format(availabilityRatio, uiState.rps)
+                                } else if (isWaking) {
+                                    "Render cold start wake probe in flight..."
+                                } else {
+                                    "Gateway Offline • Reconnect to resume live feed"
+                                }
+
                                 Text(
-                                    text = if (isWaking) "Render cold start wake probe in flight..." else "SLA: 99.98% availability • Sub-ms Rate Limiting",
+                                    text = availabilityText,
                                     fontSize = 11.sp,
                                     color = PolyTextSecondary,
                                     fontFamily = FontFamily.SansSerif
@@ -884,11 +962,18 @@ fun ViewerDashboardContent(
                         }
 
                         if (!isConnected) {
-                            GlassButton(
-                                text = "Reconnect",
-                                accentColor = PolyPrimary,
-                                onClick = { viewModel.reconnect() }
-                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                PillActionButton(
+                                    text = "Scan QR",
+                                    icon = Icons.Default.Share,
+                                    onClick = onShowPairDialog
+                                )
+                                PillActionButton(
+                                    text = "Reconnect",
+                                    icon = Icons.Default.Refresh,
+                                    onClick = { viewModel.reconnect() }
+                                )
+                            }
                         } else {
                             GlassBadge(
                                 text = "LIVE FEED",
@@ -917,7 +1002,7 @@ fun ViewerDashboardContent(
                         title = "ACTIVE ROUTES",
                         value = "${uiState.endpointCount}",
                         subtitle = "rate-limited routes",
-                        icon = Icons.Default.List,
+                        icon = Icons.Default.Menu,
                         accentColor = PolyPrimary,
                         modifier = Modifier.weight(1f)
                     )
@@ -1015,7 +1100,7 @@ fun ViewerDashboardContent(
                     }
                 }
             } else {
-                items(uiState.recentLogs, key = { it.logId }) { log ->
+                items(uiState.recentLogs, key = { it.id }) { log ->
                     WhiteLogItemCard(log)
                 }
             }
@@ -1155,26 +1240,32 @@ fun PolyLanceLiveProtocolSection(
                     )
                 }
 
-                // Tab Selector
+                // Tab Selector with FilterTiles
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    PolyLanceTabChip(
-                        title = "Escrows",
+                    FilterTile(
+                        label = "Escrows",
+                        icon = Icons.Default.Star,
                         selected = state.selectedTab == PolyLanceTab.ESCROWS,
+                        badge = state.escrows.size.toString(),
                         onClick = { onTabSelect(PolyLanceTab.ESCROWS) },
                         modifier = Modifier.weight(1f)
                     )
-                    PolyLanceTabChip(
-                        title = "Attestations",
+                    FilterTile(
+                        label = "Attestations",
+                        icon = Icons.Default.CheckCircle,
                         selected = state.selectedTab == PolyLanceTab.ATTESTATIONS,
+                        badge = state.attestations.size.toString(),
                         onClick = { onTabSelect(PolyLanceTab.ATTESTATIONS) },
                         modifier = Modifier.weight(1f)
                     )
-                    PolyLanceTabChip(
-                        title = "Talents",
+                    FilterTile(
+                        label = "Talents",
+                        icon = Icons.Default.Person,
                         selected = state.selectedTab == PolyLanceTab.TALENTS,
+                        badge = state.talents.size.toString(),
                         onClick = { onTabSelect(PolyLanceTab.TALENTS) },
                         modifier = Modifier.weight(1f)
                     )
@@ -1186,35 +1277,28 @@ fun PolyLanceLiveProtocolSection(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    GlassButton(
-                        text = if (state.isLoading) "Fetching..." else if (isAdmin) "Fetch Live Data" else "Refresh Live Data",
-                        accentColor = PolyPrimary,
+                    PillActionButton(
+                        text = if (state.isLoading) "Fetching..." else if (isAdmin) "Fetch Live" else "Refresh",
+                        icon = Icons.Default.Refresh,
                         onClick = onFetch,
                         modifier = if (isAdmin) Modifier.weight(1.2f) else Modifier.weight(1f)
                     )
 
                     if (isAdmin) {
                         if (state.selectedTab == PolyLanceTab.ESCROWS) {
-                            GlassButton(
+                            PillActionButton(
                                 text = "+500 POL",
-                                accentColor = PolyPurple,
+                                icon = Icons.Default.Add,
                                 onClick = onCreateEscrow,
-                                modifier = Modifier.weight(0.9f)
+                                modifier = Modifier.weight(1f)
                             )
                         }
 
-                        GlassButton(
-                            text = "Burst",
-                            accentColor = PolyWarning,
-                            onClick = onBurst,
-                            modifier = Modifier.weight(0.8f)
-                        )
-
-                        GlassButton(
+                        PillActionButton(
                             text = "Optimize",
-                            accentColor = PolyCyan,
+                            icon = Icons.Default.Star,
                             onClick = onOptimize,
-                            modifier = Modifier.weight(0.9f)
+                            modifier = Modifier.weight(1f)
                         )
                     } else {
                         GlassBadge(
@@ -1559,31 +1643,27 @@ fun OptimizationResultBanner(
                     color = PolyDanger
                 )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Dismiss",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF92400E),
-                        modifier = Modifier
-                            .clickable(onClick = onDismiss)
-                            .padding(vertical = 4.dp, horizontal = 6.dp)
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(PolyPrimary)
-                            .clickable(onClick = onApply)
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.heightIn(min = 48.dp)
                     ) {
                         Text(
-                            text = "Apply Policy",
+                            text = "Dismiss",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = Color(0xFF92400E)
                         )
                     }
+
+                    PillActionButton(
+                        text = "Apply Policy",
+                        icon = Icons.Default.Check,
+                        onClick = onApply
+                    )
                 }
             }
         }
@@ -1653,10 +1733,10 @@ fun WhiteMetricTile(
 }
 
 @Composable
-fun WhiteLogItemCard(log: RequestLog) {
-    val isBlocked = log.statusCode == 429
-    val isError = log.statusCode >= 400 && !isBlocked
-    val isSuccess = log.statusCode in 200..299
+fun WhiteLogItemCard(log: RequestLogDto) {
+    val isBlocked = log.status == 429
+    val isError = log.status >= 400 && !isBlocked
+    val isSuccess = log.status in 200..299
 
     val statusColor = when {
         isSuccess -> PolySuccess
@@ -1690,14 +1770,14 @@ fun WhiteLogItemCard(log: RequestLog) {
                 )
                 Column {
                     Text(
-                        text = log.endpointId,
+                        text = "${log.method} ${log.path}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = PolyTextPrimary,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "${log.sourceIp} • ${log.latencyMs}ms • $timeFormatted",
+                        text = "${log.clientId} • ${log.latencyMs}ms • $timeFormatted",
                         fontSize = 11.sp,
                         color = PolyTextSecondary
                     )
@@ -1705,7 +1785,7 @@ fun WhiteLogItemCard(log: RequestLog) {
             }
 
             GlassBadge(
-                text = "HTTP ${log.statusCode}",
+                text = "HTTP ${log.status}",
                 color = statusColor
             )
         }
@@ -1713,7 +1793,7 @@ fun WhiteLogItemCard(log: RequestLog) {
 }
 
 @Composable
-fun WhiteLogItem(log: RequestLog) = WhiteLogItemCard(log)
+fun WhiteLogItem(log: RequestLogDto) = WhiteLogItemCard(log)
 
 @Composable
 fun WhiteHostConfigDialog(
@@ -1737,7 +1817,7 @@ fun WhiteHostConfigDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "Configure the IP:Port of the live Kotlin/Ktor Rate Limiter Gateway running on your machine.",
+                    text = "Configure the IP:Port or URL of the live Kotlin/Ktor Rate Limiter Gateway.",
                     fontSize = 12.sp,
                     color = PolyTextSecondary
                 )
@@ -1745,7 +1825,7 @@ fun WhiteHostConfigDialog(
                 OutlinedTextField(
                     value = hostInput,
                     onValueChange = { hostInput = it },
-                    label = { Text("Host (e.g. 192.168.29.231:8000)") },
+                    label = { Text("Host (e.g. 127.0.0.1:8000)") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = PolyTextPrimary,
@@ -1772,19 +1852,19 @@ fun WhiteHostConfigDialog(
                         WhitePresetChip("Emulator (10.0.2.2)") {
                             hostInput = "10.0.2.2:8000"
                         }
-                        WhitePresetChip("Wi-Fi (172.16.52.25)") {
-                            hostInput = "172.16.52.25:8000"
+                        WhitePresetChip("Local USB (127.0.0.1)") {
+                            hostInput = "127.0.0.1:8000"
                         }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        WhitePresetChip("ADB (127.0.0.1)") {
-                            hostInput = "127.0.0.1:8000"
+                        WhitePresetChip("LAN Wi-Fi (Auto)") {
+                            hostInput = "192.168.1.100:8000"
                         }
-                        WhitePresetChip("Cloud (Render)") {
-                            hostInput = "polylance-fv-1-45wy.onrender.com"
+                        WhitePresetChip("Cloud Gateway (Render)") {
+                            hostInput = "https://nt14-gateway.onrender.com"
                         }
                     }
                 }

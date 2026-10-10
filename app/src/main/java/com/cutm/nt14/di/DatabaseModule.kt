@@ -30,42 +30,11 @@ object DatabaseModule {
             "nt14_database"
         )
         .fallbackToDestructiveMigration()
-        .addCallback(object : RoomDatabase.Callback() {
-            override fun onCreate(db: SupportSQLiteDatabase) {
-                super.onCreate(db)
-                Executors.newSingleThreadExecutor().execute {
-                    seedDatabase(database)
-                }
-            }
-        }).build()
+        .build()
         return database
     }
 
-    private fun seedDatabase(db: NT14Database) {
-        val now = System.currentTimeMillis()
 
-        runBlocking {
-            // Seed PolyLance Sovereign Protocol endpoints and rate limit rules.
-            // NO MOCK REQUEST LOGS OR INCIDENTS — all data is fed in real-time from the live Gateway WebSocket!
-            val ep1 = Endpoint("ep_poly_escrows", "PolyLance Escrows API", "/api/polylance/escrows", "GET", "ACTIVE", "akhil@polylance.codes")
-            val ep2 = Endpoint("ep_poly_attestations", "PolyLance Attestations API", "/api/polylance/attestations", "GET", "ACTIVE", "akhil@polylance.codes")
-            val ep3 = Endpoint("ep_poly_talents", "PolyLance Talents API", "/api/polylance/talents", "GET", "ACTIVE", "akhil@polylance.codes")
-            val ep4 = Endpoint("ep_rules", "Rate Limiter Rules API", "/api/rules", "GET", "ACTIVE", "akhil@polylance.codes")
-
-            db.endpointDao().insertEndpoint(ep1)
-            db.endpointDao().insertEndpoint(ep2)
-            db.endpointDao().insertEndpoint(ep3)
-            db.endpointDao().insertEndpoint(ep4)
-
-            val rl1 = RateLimit("rl_poly_escrows", "/api/polylance/escrows", 20, 5, "BLOCK", now, SyncStatus.SYNCED)
-            val rl2 = RateLimit("rl_poly_attestations", "/api/polylance/attestations", 30, 8, "BLOCK", now, SyncStatus.SYNCED)
-            val rl3 = RateLimit("rl_poly_talents", "/api/polylance/talents", 60, 15, "THROTTLE", now, SyncStatus.SYNCED)
-
-            db.rateLimitDao().insertRule(rl1)
-            db.rateLimitDao().insertRule(rl2)
-            db.rateLimitDao().insertRule(rl3)
-        }
-    }
 
     @Provides
     fun provideEndpointDao(db: NT14Database) = db.endpointDao()

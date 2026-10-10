@@ -2,25 +2,42 @@ package com.cutm.nt14.ui.abuse
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.cutm.nt14.data.local.daos.AbuseEventDao
-import com.cutm.nt14.data.local.daos.DDoSIncidentDao
+import com.cutm.nt14.data.remote.model.ActiveBanDto
+import com.cutm.nt14.data.remote.model.IncidentDto
+import com.cutm.nt14.data.repository.GatewayRepository
+import com.cutm.nt14.domain.model.UserRole
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class IncidentViewModel @Inject constructor(
-    private val abuseDao: AbuseEventDao,
-    private val ddosDao: DDoSIncidentDao,
-    private val sessionManager: com.cutm.nt14.data.local.SessionManager
+    private val repository: GatewayRepository
 ) : ViewModel() {
 
-    val userRole = sessionManager.userRole
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.cutm.nt14.domain.model.UserRole.VIEWER)
+    val userRole: StateFlow<UserRole> = repository.userRole
+    val isOffline: StateFlow<Boolean> = repository.isOffline
+    val activeBans: StateFlow<List<ActiveBanDto>> = repository.bans
+    val incidents: StateFlow<List<IncidentDto>> = repository.incidents
 
-    val abuseEvents = abuseDao.getAllEvents()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _actionMessage = MutableStateFlow<String?>(null)
+    val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
-    val ddosIncidents = ddosDao.getAllIncidents()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun unbanClient(clientId: String) {
+        viewModelScope.launch {
+            val ok = repository.unbanClient(clientId)
+            _actionMessage.value = if (ok) "Ban lifted for $clientId" else "Failed to lift ban"
+        }
+    }
+
+    fun clearActionMessage() {
+        _actionMessage.value = null
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            repository.refresh()
+        }
+    }
 }

@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.cutm.nt14.data.remote.GatewayWebSocketClient
+import com.cutm.nt14.data.repository.GatewayRepository
 import com.cutm.nt14.ui.theme.NT14Theme
 import com.cutm.nt14.ui.navigation.NT14NavHost
 import dagger.hilt.android.AndroidEntryPoint
@@ -23,6 +24,9 @@ class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var wsClient: GatewayWebSocketClient
+
+    @Inject
+    lateinit var repository: GatewayRepository
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -40,7 +44,7 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             NT14Theme {
-                NT14NavHost()
+                NT14NavHost(repository = repository)
             }
         }
     }

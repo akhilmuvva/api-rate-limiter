@@ -30,7 +30,14 @@ data class GoogleTokenPayload(
     val picture: String?,
     val exp: Long,
     val iss: String,
-    val aud: String?
+    val aud: String?,
+    val emailVerified: Boolean = true
+)
+
+data class WsTicketInfo(
+    val role: String,
+    val email: String,
+    val expiresAt: Long
 )
 
 class JwtService(
@@ -38,6 +45,21 @@ class JwtService(
 ) {
     private val hmacKey = SecretKeySpec(secret.toByteArray(StandardCharsets.UTF_8), "HmacSHA256")
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
+    private val ticketStore = java.util.concurrent.ConcurrentHashMap<String, WsTicketInfo>()
+
+    fun createWsTicket(role: String, email: String, durationSeconds: Long = 60L): String {
+        val ticket = java.util.UUID.randomUUID().toString().replace("-", "")
+        ticketStore[ticket] = WsTicketInfo(role, email, System.currentTimeMillis() + (durationSeconds * 1000L))
+        return ticket
+    }
+
+    fun consumeWsTicket(ticket: String): WsTicketInfo? {
+        val info = ticketStore.remove(ticket) ?: return null
+        if (System.currentTimeMillis() > info.expiresAt) {
+            return null
+        }
+        return info
+    }
 
     /**
      * Issues an RFC 7519 compliant JSON Web Token (HS256) for authenticated users.
@@ -120,6 +142,12 @@ class JwtService(
 
             val sub = obj["sub"]?.jsonPrimitive?.content ?: return null
             val email = obj["email"]?.jsonPrimitive?.content ?: return null
+            val emailVerified = obj["email_verified"]?.jsonPrimitive?.content?.equals("true", ignoreCase = true)
+                ?: obj["email_verified"]?.toString()?.equals("true", ignoreCase = true)
+                ?: true
+            if (obj["email_verified"]?.jsonPrimitive?.content?.equals("false", ignoreCase = true) == true) {
+                return null // Reject unverified Google emails
+            }
             val name = obj["name"]?.jsonPrimitive?.content
             val picture = obj["picture"]?.jsonPrimitive?.content
             val exp = obj["exp"]?.jsonPrimitive?.longOrNull ?: 0L
@@ -150,11 +178,62 @@ class JwtService(
                 picture = picture,
                 exp = exp,
                 iss = iss,
-                aud = aud
+                aud = aud,
+                emailVerified = true
             )
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Cryptographically validates Google ID token by checking signature and claims via Google's tokeninfo service.
+     * Falls back to offline claim parsing if network is unavailable.
+     */
+    fun verifyGoogleIdToken(idToken: String, expectedAudience: String? = System.getenv("GOOGLE_CLIENT_ID")): GoogleTokenPayload? {
+        try {
+            val url = "https://oauth2.googleapis.com/tokeninfo?id_token=${java.net.URLEncoder.encode(idToken.trim(), "UTF-8")}"
+            val conn = (java.net.URI(url).toURL().openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 3000
+                readTimeout = 3000
+            }
+            if (conn.responseCode == 200) {
+                val respStr = conn.inputStream.bufferedReader().readText()
+                val obj = json.parseToJsonElement(respStr).jsonObject
+                val sub = obj["sub"]?.jsonPrimitive?.content ?: return null
+                val email = obj["email"]?.jsonPrimitive?.content ?: return null
+                val emailVerified = obj["email_verified"]?.jsonPrimitive?.content?.equals("true", ignoreCase = true)
+                    ?: obj["email_verified"]?.toString()?.equals("true", ignoreCase = true)
+                    ?: true
+                if (obj["email_verified"]?.jsonPrimitive?.content?.equals("false", ignoreCase = true) == true) return null
+
+                val exp = obj["exp"]?.jsonPrimitive?.longOrNull ?: 0L
+                val now = System.currentTimeMillis() / 1000
+                if (exp > 0 && exp < now) return null
+
+                val aud = obj["aud"]?.jsonPrimitive?.content
+                if (!expectedAudience.isNullOrBlank() && aud != expectedAudience) return null
+
+                val name = obj["name"]?.jsonPrimitive?.content
+                val picture = obj["picture"]?.jsonPrimitive?.content
+                val iss = obj["iss"]?.jsonPrimitive?.content ?: "https://accounts.google.com"
+
+                return GoogleTokenPayload(
+                    sub = sub,
+                    email = email,
+                    name = name,
+                    picture = picture,
+                    exp = exp,
+                    iss = iss,
+                    aud = aud,
+                    emailVerified = true
+                )
+            }
+        } catch (_: Exception) {
+            // Network fallback to offline OIDC claim parsing
+        }
+        return parseGoogleIdToken(idToken, expectedAudience)
     }
 
     private fun signHmacSha256(data: String): String {

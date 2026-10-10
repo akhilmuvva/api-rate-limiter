@@ -64,4 +64,10 @@ class TokenBucket(
         refillUnlocked(now)
         tokens to capacity
     }
+
+    suspend fun refund(tokensToRefund: Double = 1.0) = mutex.withLock {
+        val now = System.nanoTime()
+        refillUnlocked(now)
+        tokens = (tokens + tokensToRefund).coerceAtMost(capacity)
+    }
 }

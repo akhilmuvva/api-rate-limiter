@@ -5,18 +5,92 @@ import kotlinx.serialization.Serializable
 
 /**
  * Real-time event payload matching Android's GatewayWebSocketClient byte-for-byte.
- * Note: latencyMs is annotated with @SerialName("latency_ms") because Android's
- * GatewayWebSocketClient specifically parses `json.optDouble("latency_ms", 50.0)`.
+ * Supports versioned events:
+ * - "snapshot"
+ * - "request"
+ * - "blocked_request"
+ * - "ip_blocked"
+ * - "metrics"
+ * - "ban"
+ * - "unban"
+ * - "rule_changed"
+ * - "incident"
  */
 @Serializable
 data class GatewayEvent(
-    val type: String, // "request" | "blocked_request" | "ip_blocked"
-    val ip: String,
-    val endpoint: String,
-    val status: Int,
+    val type: String, // "snapshot" | "request" | "blocked_request" | "ip_blocked" | "metrics" | "ban" | "unban" | "rule_changed" | "incident"
+    val id: String? = null,
+    val ip: String? = null,
+    val endpoint: String? = null,
+    val method: String? = null,
+    val status: Int? = null,
     @SerialName("latency_ms")
+    val latencyMs: Long? = null,
+    val decision: String? = null,
+    val timestamp: Double = System.currentTimeMillis() / 1000.0,
+    val metrics: GatewayMetrics? = null,
+    val rules: List<RateLimitRule>? = null,
+    val activeBans: List<ActiveBanDto>? = null,
+    val logs: List<RequestLogDto>? = null,
+    val incidents: List<IncidentDto>? = null,
+    val ban: ActiveBanDto? = null,
+    val rule: RateLimitRule? = null,
+    val incident: IncidentDto? = null
+)
+
+@Serializable
+data class GatewayMetrics(
+    val rps: Double = 0.0,
+    val allowed: Long = 0,
+    val throttled: Long = 0,
+    val errorRate: Double = 0.0,
+    val p50LatencyMs: Long = 0,
+    val p95LatencyMs: Long = 0,
+    val activeClients: Int = 0,
+    val endpointCounts: Map<String, Long> = emptyMap()
+)
+
+@Serializable
+data class ActiveBanDto(
+    val clientId: String,
+    val reason: String,
+    val expiresAt: Long
+)
+
+@Serializable
+data class RequestLogDto(
+    val id: String,
+    val timestamp: Long,
+    val clientId: String,
+    val method: String,
+    val path: String,
+    val status: Int,
     val latencyMs: Long,
-    val timestamp: Double
+    val decision: String
+)
+
+@Serializable
+data class IncidentDto(
+    val id: String,
+    val type: String,
+    val severity: String = "HIGH", // "CRITICAL", "HIGH", "MEDIUM"
+    val detail: String,
+    val timestamp: Long
+)
+
+@Serializable
+data class TrafficReportDto(
+    val range: String, // "1h", "24h", "7d"
+    val totalRequests: Long,
+    val allowedRequests: Long,
+    val blockedRequests: Long,
+    val errorRate: Double,
+    val avgLatencyMs: Long,
+    val p95LatencyMs: Long,
+    val peakRps: Double,
+    val topEndpoints: Map<String, Long>,
+    val topClients: Map<String, Long>,
+    val generatedAt: Long = System.currentTimeMillis()
 )
 
 /**
@@ -35,10 +109,11 @@ data class RateLimitRule(
  */
 @Serializable
 data class SimulateRequest(
-    val endpoint: String = "/api/users",
+    val endpoint: String = "/api/polylance/escrows",
     val requestCount: Int = 30,
     val rps: Double = 20.0,
-    val sourceIps: List<String> = listOf("192.168.1.10", "192.168.1.25", "10.0.0.5")
+    val sourceIps: List<String> = listOf("192.168.1.10", "192.168.1.25", "10.0.0.5"),
+    val profile: String = "burst" // "normal" | "burst" | "attack"
 )
 
 /**
@@ -48,7 +123,8 @@ data class SimulateRequest(
 data class SimulateResponse(
     val message: String,
     val totalTriggered: Int,
-    val endpoint: String
+    val endpoint: String,
+    val profile: String = "burst"
 )
 
 /**
@@ -71,7 +147,12 @@ data class DemoOrder(val orderId: String, val amount: Double, val status: String
 data class DemoProduct(val sku: String, val name: String, val price: Double)
 
 @Serializable
-data class HealthResponse(val status: String, val subscribers: Int)
+data class HealthResponse(
+    val status: String,
+    val subscribers: Int,
+    val uptimeMs: Long = 0L,
+    val metrics: GatewayMetrics? = null
+)
 
 // PolyLance Web3 Protocol Models
 @Serializable
@@ -123,4 +204,3 @@ data class AuthUserInfo(
     val role: String,
     val provider: String = "google"
 )
-

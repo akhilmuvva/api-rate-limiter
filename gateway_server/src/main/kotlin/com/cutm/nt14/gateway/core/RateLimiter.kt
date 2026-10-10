@@ -176,7 +176,7 @@ class RateLimiter {
             val swResult = pair.slidingWindow.allow()
             if (!swResult.allowed) {
                 // Denied by Sliding Window -> refund the token consumed from token bucket
-                pair.tokenBucket.allow(-1.0)
+                pair.tokenBucket.refund(1.0)
                 return@withLock RateLimitEvaluation(
                     allowed = false,
                     limit = rule.limitPerMin,
