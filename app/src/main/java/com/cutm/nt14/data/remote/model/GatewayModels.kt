@@ -76,3 +76,13 @@ data class ClientInfoDto(
     val status: String = "active", // "active", "throttled", "banned"
     val isDemo: Boolean = false
 )
+
+data class WhoAmIDto(
+    val resolvedIp: String,
+    val immediatePeer: String,
+    val rawXForwardedFor: String? = null,
+    val cfConnectingIp: String? = null,
+    val isTrustedProxy: Boolean = false,
+    val authenticatedUser: String? = null,
+    val role: String = "VIEWER"
+)

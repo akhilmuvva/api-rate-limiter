@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cutm.nt14.data.remote.GatewayConnectionState
 import com.cutm.nt14.data.repository.GatewayRepository
+import com.cutm.nt14.domain.model.UserRole
 
 @Composable
 fun GlobalConnectionBanner(
@@ -30,6 +31,7 @@ fun GlobalConnectionBanner(
 ) {
     val connectionState by repository.connectionState.collectAsState()
     val host by repository.connectedHost.collectAsState()
+    val userRole by repository.userRole.collectAsState()
     var showHostDialog by remember { mutableStateOf(false) }
 
     val isConnected = connectionState is GatewayConnectionState.Connected
@@ -157,7 +159,9 @@ fun GlobalConnectionBanner(
             onSave = { newHost ->
                 repository.updateHost(newHost)
                 showHostDialog = false
-            }
+            },
+            isAdmin = userRole == UserRole.ADMIN,
+            repository = repository
         )
     }
 }
@@ -168,9 +172,12 @@ private data class Quint<A, B, C, D, E>(val first: A, val second: B, val third: 
 fun GatewayHostConfigDialog(
     currentHost: String,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (String) -> Unit,
+    isAdmin: Boolean = false,
+    repository: com.cutm.nt14.data.repository.GatewayRepository? = null
 ) {
     var hostInput by remember { mutableStateOf(currentHost) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -238,6 +245,20 @@ fun GatewayHostConfigDialog(
                         }
                     }
                 }
+
+                if (isAdmin && repository != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { showDiagnostics = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = PolyPrimary),
+                        border = BorderStroke(1.dp, PolyPrimary)
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Gateway Diagnostics (Admin)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         },
         confirmButton = {
@@ -254,6 +275,15 @@ fun GatewayHostConfigDialog(
             }
         }
     )
+
+    if (showDiagnostics && repository != null) {
+        GatewayDiagnosticsDialog(
+            currentHost = currentHost,
+            onDismiss = { showDiagnostics = false },
+            fetchWhoAmI = { repository.fetchWhoAmI() },
+            fetchSessionToken = { repository.getSessionToken() }
+        )
+    }
 }
 
 @Composable

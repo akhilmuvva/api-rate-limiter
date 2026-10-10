@@ -164,6 +164,14 @@ class DashboardViewModel @Inject constructor(
         repository.updateHost(newHost)
     }
 
+    suspend fun fetchWhoAmI(): WhoAmIDto? {
+        return repository.fetchWhoAmI()
+    }
+
+    suspend fun getSessionToken(): String? {
+        return repository.getSessionToken()
+    }
+
     fun selectPolyLanceTab(tab: PolyLanceTab) {
         _polyLanceState.update { it.copy(selectedTab = tab) }
         fetchActivePolyLanceData()

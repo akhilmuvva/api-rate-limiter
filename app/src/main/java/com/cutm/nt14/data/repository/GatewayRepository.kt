@@ -78,6 +78,14 @@ class GatewayRepository @Inject constructor(
         return wsClient.fetchReports(range)
     }
 
+    suspend fun fetchWhoAmI(): WhoAmIDto? {
+        return wsClient.fetchWhoAmI()
+    }
+
+    suspend fun getSessionToken(): String? {
+        return wsClient.getSessionToken()
+    }
+
     fun reconnect() {
         wsClient.reconnect()
     }

@@ -790,6 +790,34 @@ class GatewayWebSocketClient @Inject constructor(
         }
     }
 
+    suspend fun fetchWhoAmI(): WhoAmIDto? = withContext(Dispatchers.IO) {
+        val url = buildHttpUrl(_connectedHost.value, "/api/whoami")
+        try {
+            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string().orEmpty()
+                    val obj = JSONObject(body)
+                    WhoAmIDto(
+                        resolvedIp = obj.optString("resolvedIp", "Unknown"),
+                        immediatePeer = obj.optString("immediatePeer", "Unknown"),
+                        rawXForwardedFor = obj.optString("rawXForwardedFor").takeIf { it.isNotBlank() && it != "null" },
+                        cfConnectingIp = obj.optString("cfConnectingIp").takeIf { it.isNotBlank() && it != "null" },
+                        isTrustedProxy = obj.optBoolean("isTrustedProxy", false),
+                        authenticatedUser = obj.optString("authenticatedUser").takeIf { it.isNotBlank() && it != "null" },
+                        role = obj.optString("role", "VIEWER")
+                    )
+                } else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun getSessionToken(): String? {
+        return sessionManager.userJwtToken.first()
+    }
+
     suspend fun simulateTraffic(reqDto: SimulateRequestDto): Boolean = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/simulate")
         try {

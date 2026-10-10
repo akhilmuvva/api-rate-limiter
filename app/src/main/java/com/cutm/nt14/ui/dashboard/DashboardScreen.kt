@@ -109,7 +109,8 @@ fun DashboardScreen(
             onSave = { newHost ->
                 viewModel.updateGatewayHost(newHost)
                 showHostDialog = false
-            }
+            },
+            viewModel = viewModel
         )
     }
 
@@ -1838,9 +1839,11 @@ fun WhiteLogItem(log: RequestLogDto) = WhiteLogItemCard(log)
 fun WhiteHostConfigDialog(
     currentHost: String,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit
+    onSave: (String) -> Unit,
+    viewModel: DashboardViewModel? = null
 ) {
     var hostInput by remember { mutableStateOf(currentHost) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1907,6 +1910,20 @@ fun WhiteHostConfigDialog(
                         }
                     }
                 }
+
+                if (viewModel != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { showDiagnostics = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = PolyPrimary),
+                        border = BorderStroke(1.dp, PolyPrimary)
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Gateway Diagnostics (Admin)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         },
         confirmButton = {
@@ -1923,6 +1940,15 @@ fun WhiteHostConfigDialog(
             }
         }
     )
+
+    if (showDiagnostics && viewModel != null) {
+        GatewayDiagnosticsDialog(
+            currentHost = currentHost,
+            onDismiss = { showDiagnostics = false },
+            fetchWhoAmI = { viewModel.fetchWhoAmI() },
+            fetchSessionToken = { viewModel.getSessionToken() }
+        )
+    }
 }
 
 @Composable
