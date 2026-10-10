@@ -7,8 +7,8 @@ COPY gradlew gradlew.bat settings.gradle.kts build.gradle.kts gradle.properties 
 COPY gradle ./gradle
 COPY gateway_server ./gateway_server
 
-# Remove Android :app module from settings.gradle.kts so build doesn't require Android SDK
-RUN sed -i '/:app/d' settings.gradle.kts
+# Remove local Windows java.home and Android :app module
+RUN sed -i '/org.gradle.java.home/d' gradle.properties && sed -i '/:app/d' settings.gradle.kts
 
 # Fix line endings and ensure execution permission
 RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
