@@ -10,6 +10,9 @@ COPY gateway_server ./gateway_server
 # Remove Android :app module from settings.gradle.kts so build doesn't require Android SDK
 RUN sed -i '/:app/d' settings.gradle.kts
 
+# Fix line endings and ensure execution permission
+RUN sed -i 's/\r$//' gradlew && chmod +x gradlew
+
 # Build application distribution
 RUN ./gradlew :gateway_server:installDist --no-daemon
 
