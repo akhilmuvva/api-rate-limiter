@@ -538,6 +538,15 @@ class GatewayWebSocketClient @Inject constructor(
                             )
                             ddosDao.insertIncident(incident)
 
+                            val incDto = IncidentDto(
+                                id = incidentId,
+                                type = if (type == "ip_blocked") "IP Block Enforcement" else "Rate Limit Spike",
+                                severity = if (type == "ip_blocked") "CRITICAL" else "HIGH",
+                                detail = "Client $ip throttled on $endpoint (action: ${if (type == "ip_blocked") "BLOCK_IP" else "THROTTLE"})",
+                                timestamp = timestamp
+                            )
+                            _liveIncidents.value = (listOf(incDto) + _liveIncidents.value).take(100)
+
                             if (type == "ip_blocked") {
                                 showNotification(
                                     title = "Security Alert: IP Blocked",

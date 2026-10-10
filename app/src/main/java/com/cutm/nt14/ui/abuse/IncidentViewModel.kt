@@ -2,6 +2,8 @@ package com.cutm.nt14.ui.abuse
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.cutm.nt14.data.local.daos.AbuseEventDao
+import com.cutm.nt14.data.local.daos.DDoSIncidentDao
 import com.cutm.nt14.data.remote.model.ActiveBanDto
 import com.cutm.nt14.data.remote.model.ClientInfoDto
 import com.cutm.nt14.data.remote.model.IncidentDto
@@ -14,14 +16,51 @@ import javax.inject.Inject
 
 @HiltViewModel
 class IncidentViewModel @Inject constructor(
-    private val repository: GatewayRepository
+    private val repository: GatewayRepository,
+    private val abuseDao: AbuseEventDao,
+    private val ddosDao: DDoSIncidentDao
 ) : ViewModel() {
 
     val userRole: StateFlow<UserRole> = repository.userRole
     val isOffline: StateFlow<Boolean> = repository.isOffline
     val activeBans: StateFlow<List<ActiveBanDto>> = repository.bans
-    val incidents: StateFlow<List<IncidentDto>> = repository.incidents
     val clients: StateFlow<List<ClientInfoDto>> = repository.clients
+
+    val incidents: StateFlow<List<IncidentDto>> = combine(
+        repository.incidents,
+        abuseDao.getAllEvents(),
+        ddosDao.getAllIncidents()
+    ) { repoIncidents, abuseEvents, ddosIncidents ->
+        val localIncidents = mutableListOf<IncidentDto>()
+
+        for (ddos in ddosIncidents) {
+            localIncidents.add(
+                IncidentDto(
+                    id = ddos.incidentId,
+                    type = "DDoS Spike (${ddos.requestSpike} reqs)",
+                    severity = ddos.severity,
+                    detail = "Endpoint ${ddos.endpointId} experienced rapid traffic surge (status: ${ddos.status})",
+                    timestamp = ddos.startTime
+                )
+            )
+        }
+
+        for (abuse in abuseEvents) {
+            localIncidents.add(
+                IncidentDto(
+                    id = abuse.eventId,
+                    type = abuse.eventType,
+                    severity = if (abuse.riskScore > 80) "CRITICAL" else "HIGH",
+                    detail = "Action ${abuse.action} enforced on request (risk score: ${abuse.riskScore})",
+                    timestamp = abuse.createdAt
+                )
+            )
+        }
+
+        (repoIncidents + localIncidents)
+            .distinctBy { it.id }
+            .sortedByDescending { it.timestamp }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
