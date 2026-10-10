@@ -62,7 +62,8 @@ data class DashboardUiState(
     val userName: String? = null,
     val userRole: UserRole = UserRole.VIEWER,
     val securityReport: SecurityIntegrityReport? = null,
-    val topEndpoints: Map<String, Long> = emptyMap()
+    val topEndpoints: Map<String, Long> = emptyMap(),
+    val demoMode: Boolean = false
 )
 
 @HiltViewModel
@@ -130,7 +131,8 @@ class DashboardViewModel @Inject constructor(
             actionMessage = msg,
             userRole = role,
             securityReport = securityChecker.checkIntegrity(),
-            topEndpoints = metrics.endpointCounts
+            topEndpoints = metrics.endpointCounts,
+            demoMode = metrics.demoMode
         )
     }.stateIn(
         scope = viewModelScope,

@@ -274,7 +274,8 @@ class GatewayWebSocketClient @Inject constructor(
             p50LatencyMs = obj.optLong("p50LatencyMs", 0L),
             p95LatencyMs = obj.optLong("p95LatencyMs", 0L),
             activeClients = obj.optInt("activeClients", 0),
-            endpointCounts = endpointCountsMap
+            endpointCounts = endpointCountsMap,
+            demoMode = obj.optBoolean("demoMode", false)
         )
     }
 

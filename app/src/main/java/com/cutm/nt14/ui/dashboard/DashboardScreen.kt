@@ -201,6 +201,12 @@ fun AdminDashboardContent(
                                 text = "ADMIN",
                                 color = PolyPrimary
                             )
+                            if (uiState.demoMode) {
+                                GlassBadge(
+                                    text = "DEMO TRAFFIC",
+                                    color = PolyWarning
+                                )
+                            }
                         }
                         Text(
                             text = "Gateway Dashboard",
@@ -346,6 +352,22 @@ fun AdminDashboardContent(
                                         text = "Reconnect",
                                         icon = Icons.Default.Refresh,
                                         onClick = { viewModel.reconnect() }
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (uiState.demoMode) {
+                                        GlassBadge(
+                                            text = "DEMO TRAFFIC",
+                                            color = PolyWarning
+                                        )
+                                    }
+                                    GlassBadge(
+                                        text = "LIVE FEED",
+                                        color = PolySuccess
                                     )
                                 }
                             }
@@ -762,6 +784,12 @@ fun ViewerDashboardContent(
                             text = "VIEWER",
                             color = PolyTextSecondary
                         )
+                        if (uiState.demoMode) {
+                            GlassBadge(
+                                text = "DEMO TRAFFIC",
+                                color = PolyWarning
+                            )
+                        }
                     }
                     Text(
                         text = "Viewer Dashboard",
@@ -975,10 +1003,21 @@ fun ViewerDashboardContent(
                                 )
                             }
                         } else {
-                            GlassBadge(
-                                text = "LIVE FEED",
-                                color = PolySuccess
-                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (uiState.demoMode) {
+                                    GlassBadge(
+                                        text = "DEMO TRAFFIC",
+                                        color = PolyWarning
+                                    )
+                                }
+                                GlassBadge(
+                                    text = "LIVE FEED",
+                                    color = PolySuccess
+                                )
+                            }
                         }
                     }
                 }

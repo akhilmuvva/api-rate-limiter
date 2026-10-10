@@ -8,7 +8,8 @@ data class GatewayMetrics(
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long = 0,
     val activeClients: Int = 0,
-    val endpointCounts: Map<String, Long> = emptyMap()
+    val endpointCounts: Map<String, Long> = emptyMap(),
+    val demoMode: Boolean = false
 )
 
 data class ActiveBanDto(

@@ -13,6 +13,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 
 import com.cutm.nt14.gateway.core.requireAdmin
+import com.cutm.nt14.gateway.core.requireAuth
 
 fun Route.ruleRoutes(
     rateLimiter: RateLimiter,
@@ -21,8 +22,9 @@ fun Route.ruleRoutes(
     jwtService: JwtService,
     startTimeMs: Long = System.currentTimeMillis()
 ) {
-    // GET /api/stats -> live telemetry & server health
+    // GET /api/stats -> live telemetry & server health (requires valid JWT)
     get("/api/stats") {
+        if (call.requireAuth(jwtService) == null) return@get
         val metrics = historyManager.calculateCurrentMetrics()
         call.respond(
             StatsResponse(
@@ -31,29 +33,33 @@ fun Route.ruleRoutes(
                 subscribers = webSocketManager.activeSubscriberCount(),
                 activeBansCount = rateLimiter.anomalyDetector.getActiveBans().size,
                 rulesCount = rateLimiter.getAllRules().size,
-                metrics = metrics
+                metrics = metrics,
+                demoMode = metrics.demoMode
             )
         )
     }
 
-    // GET /api/logs -> recent logs with limit and cursor
+    // GET /api/logs -> recent logs with limit and cursor (requires valid JWT)
     get("/api/logs") {
+        if (call.requireAuth(jwtService) == null) return@get
         val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 50
         val cursor = call.request.queryParameters["cursor"]
         val logs = historyManager.getRecentLogs(limit.coerceIn(1, 200), cursor)
         call.respond(logs)
     }
 
-    // GET /api/reports?range=1h|24h|7d -> aggregated history
+    // GET /api/reports?range=1h|24h|7d -> aggregated history (requires valid JWT)
     get("/api/reports") {
+        if (call.requireAuth(jwtService) == null) return@get
         val range = call.request.queryParameters["range"] ?: "1h"
         val report = historyManager.generateReport(range)
         call.respond(report)
     }
 
     route("/api/rules") {
-        // GET /api/rules -> list all active rate limit rules
+        // GET /api/rules -> list all active rate limit rules (requires valid JWT)
         get {
+            if (call.requireAuth(jwtService) == null) return@get
             call.respond(rateLimiter.getAllRules())
         }
 
@@ -108,8 +114,9 @@ fun Route.ruleRoutes(
     }
 
     route("/api/bans") {
-        // GET /api/bans -> list active anomaly bans
+        // GET /api/bans -> list active anomaly bans (requires valid JWT)
         get {
+            if (call.requireAuth(jwtService) == null) return@get
             val activeBans = rateLimiter.anomalyDetector.getActiveBans().map { (ip, record) ->
                 ActiveBanDto(clientId = ip, reason = record.reason, expiresAt = record.bannedUntil)
             }

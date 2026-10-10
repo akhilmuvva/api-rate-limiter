@@ -47,7 +47,8 @@ data class GatewayMetrics(
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long = 0,
     val activeClients: Int = 0,
-    val endpointCounts: Map<String, Long> = emptyMap()
+    val endpointCounts: Map<String, Long> = emptyMap(),
+    val demoMode: Boolean = false
 )
 
 @Serializable
@@ -243,5 +244,6 @@ data class StatsResponse(
     val subscribers: Int,
     val activeBansCount: Int,
     val rulesCount: Int,
-    val metrics: GatewayMetrics
+    val metrics: GatewayMetrics,
+    val demoMode: Boolean = false
 )

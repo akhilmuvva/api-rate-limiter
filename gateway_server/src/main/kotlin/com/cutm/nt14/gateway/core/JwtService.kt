@@ -41,11 +41,31 @@ data class WsTicketInfo(
 )
 
 class JwtService(
-    secret: String = System.getenv("JWT_SECRET") ?: "nt14-gateway-secure-production-jwt-secret-key-2026"
+    secret: String = resolveJwtSecret()
 ) {
+    companion object {
+        fun resolveJwtSecret(): String {
+            val envSecret = System.getenv("JWT_SECRET")?.trim()
+            if (envSecret.isNullOrEmpty()) {
+                throw IllegalStateException("FATAL: JWT_SECRET environment variable is missing. Startup aborted.")
+            }
+            if (envSecret.length < 32) {
+                throw IllegalStateException("FATAL: JWT_SECRET must be at least 32 characters long. Provided length: ${envSecret.length}. Startup aborted.")
+            }
+            return envSecret
+        }
+    }
+
+    init {
+        require(secret.isNotBlank() && secret.length >= 32) {
+            "FATAL: JWT_SECRET must be at least 32 characters long."
+        }
+    }
+
     private val hmacKey = SecretKeySpec(secret.toByteArray(StandardCharsets.UTF_8), "HmacSHA256")
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
     private val ticketStore = java.util.concurrent.ConcurrentHashMap<String, WsTicketInfo>()
+    private val pairingTicketStore = java.util.concurrent.ConcurrentHashMap<String, WsTicketInfo>()
 
     fun createWsTicket(role: String, email: String, durationSeconds: Long = 60L): String {
         val ticket = java.util.UUID.randomUUID().toString().replace("-", "")
@@ -55,6 +75,26 @@ class JwtService(
 
     fun consumeWsTicket(ticket: String): WsTicketInfo? {
         val info = ticketStore.remove(ticket) ?: return null
+        if (System.currentTimeMillis() > info.expiresAt) {
+            return null
+        }
+        return info
+    }
+
+    /**
+     * Issues a strictly single-use pairing ticket displayed only on the console / QR.
+     */
+    fun createOneTimePairingTicket(role: String = "ADMIN", email: String = "admin@cutm.nt14.com", durationSeconds: Long = 600L): String {
+        val ticket = java.util.UUID.randomUUID().toString().replace("-", "")
+        pairingTicketStore[ticket] = WsTicketInfo(role, email, System.currentTimeMillis() + (durationSeconds * 1000L))
+        return ticket
+    }
+
+    /**
+     * Consumes the single-use pairing ticket. If consumed once, subsequent attempts return null.
+     */
+    fun consumeOneTimePairingTicket(ticket: String): WsTicketInfo? {
+        val info = pairingTicketStore.remove(ticket) ?: return null
         if (System.currentTimeMillis() > info.expiresAt) {
             return null
         }

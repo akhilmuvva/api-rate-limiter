@@ -115,6 +115,8 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             endpointCounts[log.path] = (endpointCounts[log.path] ?: 0L) + 1L
         }
 
+        val isDemo = System.getenv("DEMO_TRAFFIC")?.toBooleanStrictOrNull() ?: true
+
         return GatewayMetrics(
             rps = (rps * 10).roundToInt() / 10.0,
             allowed = allowedCount,
@@ -123,7 +125,8 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             p50LatencyMs = p50,
             p95LatencyMs = p95,
             activeClients = activeClients,
-            endpointCounts = endpointCounts
+            endpointCounts = endpointCounts,
+            demoMode = isDemo
         )
     }
 

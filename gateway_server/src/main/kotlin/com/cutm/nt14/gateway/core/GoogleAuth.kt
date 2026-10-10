@@ -83,3 +83,16 @@ suspend fun ApplicationCall.requireAdmin(jwtService: JwtService): Boolean {
         else -> true
     }
 }
+
+// ---- Guard for read routes (rules, bans, stats, logs, reports) --------------------------------
+// Requires valid, unexpired Gateway JWT (role = ADMIN or VIEWER)
+suspend fun ApplicationCall.requireAuth(jwtService: JwtService): JwtClaims? {
+    val bearer = request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.trim()
+        ?: request.queryParameters["token"]
+    val claims = bearer?.let { jwtService.verify(it) }
+    if (claims == null) {
+        respond(HttpStatusCode.Unauthorized, ErrorBody("unauthenticated"))
+        return null
+    }
+    return claims
+}
