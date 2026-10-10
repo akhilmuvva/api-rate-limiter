@@ -98,6 +98,29 @@ class JwtService(
     }
 
     /**
+     * Signs a JWT with standard parameters (convenience alias for sign).
+     */
+    fun sign(
+        subject: String,
+        email: String,
+        role: String,
+        ttlSeconds: Long = 86400L,
+        name: String = email.substringBefore("@")
+    ): String = generateToken(
+        sub = subject,
+        email = email,
+        name = name,
+        role = role,
+        provider = "google",
+        expirationSeconds = ttlSeconds
+    )
+
+    /**
+     * Verifies the HMAC-SHA256 signature, validates token expiration, and returns parsed claims.
+     */
+    fun verify(token: String): JwtClaims? = verifyToken(token)
+
+    /**
      * Verifies the HMAC-SHA256 signature, validates token expiration, and returns parsed claims.
      */
     fun verifyToken(token: String): JwtClaims? {

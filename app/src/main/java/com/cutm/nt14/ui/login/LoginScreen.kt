@@ -1,11 +1,10 @@
 package com.cutm.nt14.ui.login
 
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Lock
@@ -15,11 +14,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cutm.nt14.R
 import com.cutm.nt14.ui.components.*
+import com.cutm.nt14.ui.theme.*
 
 @Composable
 fun LoginScreen(
@@ -27,33 +30,15 @@ fun LoginScreen(
     onLoginSuccess: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val realtimeFbUser by viewModel.realtimeFirebaseUser.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = remember(context) {
-        val fa = with(com.cutm.nt14.data.local.BiometricHelper::class.java) {
-            var c: android.content.Context? = context
-            while (c is android.content.ContextWrapper) {
-                if (c is androidx.fragment.app.FragmentActivity) break
-                c = c.baseContext
-            }
-            c as? androidx.fragment.app.FragmentActivity
+        var c: android.content.Context? = context
+        while (c is android.content.ContextWrapper) {
+            if (c is android.app.Activity) return@remember c
+            c = c.baseContext
         }
-        fa ?: (context as? android.app.Activity)
-    }
-
-    var showEmailDialog by remember { mutableStateOf(false) }
-    var inputEmail by remember { mutableStateOf("") }
-
-    // Google Play Services Realtime Sign-In Launcher
-    val googleLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.data != null) {
-            viewModel.handleGoogleSignInResult(result.data)
-        } else {
-            viewModel.onSignInCancelled()
-        }
+        null
     }
 
     LaunchedEffect(uiState) {
@@ -77,187 +62,113 @@ fun LoginScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 24.dp, horizontal = 16.dp),
+                        .padding(vertical = 32.dp, horizontal = 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(64.dp)
+                            .size(72.dp)
                             .clip(CircleShape)
-                            .background(PolyPrimaryLight),
+                            .background(Nt14Ui.Accent.copy(alpha = 0.1f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Lock,
-                            contentDescription = "Security Gateway",
-                            tint = PolyPrimary,
-                            modifier = Modifier.size(32.dp)
+                            contentDescription = "Security Shield",
+                            tint = Nt14Ui.Accent,
+                            modifier = Modifier.size(36.dp)
                         )
                     }
 
                     Spacer(modifier = Modifier.height(18.dp))
 
                     Text(
-                        text = "NT14 GATEWAY",
-                        fontSize = 11.sp,
+                        text = "NT14 API GATEWAY",
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        color = PolyPrimary,
-                        letterSpacing = 2.sp
+                        color = Nt14Ui.TextPrimary
                     )
 
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = "Real-Time Google Auth",
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = PolyTextPrimary
+                        text = "Realtime Rate Limiter & Abuse Prevention",
+                        fontSize = 12.sp,
+                        color = Nt14Ui.TextMuted,
+                        textAlign = TextAlign.Center
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     Text(
-                        text = "Sign in with your Google Account to access rate limiting controls and monitor traffic.",
+                        text = "Sign in with your Google account to receive a cryptographically signed gateway session.",
                         fontSize = 13.sp,
-                        color = PolyTextSecondary,
+                        color = Nt14Ui.TextMuted,
                         textAlign = TextAlign.Center,
+                        lineHeight = 18.sp,
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
-
-                    if (realtimeFbUser != null) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        GlassBadge(
-                            text = "Live Auth: ${realtimeFbUser?.email}",
-                            color = PolySuccess
-                        )
-                    }
 
                     Spacer(modifier = Modifier.height(28.dp))
 
                     if (uiState is LoginUiState.Loading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(32.dp),
-                            color = PolyPrimary,
+                            color = Nt14Ui.Accent,
                             strokeWidth = 3.dp
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Authenticating with Google...",
+                            text = "Authenticating with Google & Gateway...",
                             fontSize = 12.sp,
-                            color = PolyTextSecondary
+                            color = Nt14Ui.TextMuted
                         )
                     } else {
-                        GlassButton(
-                            text = "Sign in with Google (Play Services)",
-                            accentColor = PolyPrimary,
-                            isFilled = true,
+                        // 1. Google Sign-in with CredentialManager
+                        PillActionButton(
+                            text = "Sign In with Google",
+                            icon = Icons.Default.AccountCircle,
                             onClick = {
                                 if (activity != null) {
-                                    try {
-                                        val signInIntent = viewModel.getGoogleSignInIntent(activity)
-                                        googleLauncher.launch(signInIntent)
-                                    } catch (e: Exception) {
-                                        viewModel.signInWithCredentialManager(activity)
-                                    }
+                                    viewModel.signInWithCredentialManager(activity)
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(0.95f)
+                            modifier = Modifier.fillMaxWidth()
                         )
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                        GlassButton(
-                            text = "Sign in as Admin (akpolylance@gmail.com)",
-                            accentColor = PolyPrimary,
-                            isFilled = false,
-                            onClick = {
-                                viewModel.signInWithGoogleEmail("akpolylance@gmail.com", "Admin User")
-                            },
-                            modifier = Modifier.fillMaxWidth(0.95f)
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        GlassButton(
-                            text = "Enter Custom Google Email...",
-                            accentColor = PolyTextSecondary,
-                            isFilled = false,
-                            onClick = { showEmailDialog = true },
-                            modifier = Modifier.fillMaxWidth(0.95f)
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        GlassButton(
-                            text = "Continue as Guest Viewer",
-                            accentColor = PolyTextMuted,
-                            isFilled = false,
+                        // 2. Continue as Guest Viewer
+                        OutlinedButton(
                             onClick = { viewModel.signInAsGuest() },
-                            modifier = Modifier.fillMaxWidth(0.95f)
-                        )
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp),
+                            shape = RoundedCornerShape(50),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Nt14Ui.Outline),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Nt14Ui.TextPrimary
+                            )
+                        ) {
+                            Text(
+                                text = "Continue as Guest Viewer",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
 
                     if (uiState is LoginUiState.Error) {
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = (uiState as LoginUiState.Error).message,
-                            color = PolyDanger,
+                            color = Nt14Ui.Blocked,
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(horizontal = 8.dp)
                         )
                     }
                 }
-            }
-
-            // Custom Google Email Dialog
-            if (showEmailDialog) {
-                AlertDialog(
-                    onDismissRequest = { showEmailDialog = false },
-                    containerColor = Color.White,
-                    title = {
-                        Text(
-                            text = "Sign in with Google Account",
-                            fontWeight = FontWeight.Bold,
-                            color = PolyTextPrimary
-                        )
-                    },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = "Enter any Google email address to authenticate. 'akpolylance@gmail.com' gains Admin privileges; all other addresses receive Viewer privileges.",
-                                fontSize = 12.sp,
-                                color = PolyTextSecondary
-                            )
-                            OutlinedTextField(
-                                value = inputEmail,
-                                onValueChange = { inputEmail = it },
-                                label = { Text("Google Email") },
-                                placeholder = { Text("e.g. user@gmail.com") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                if (inputEmail.isNotBlank()) {
-                                    viewModel.signInWithGoogleEmail(inputEmail.trim())
-                                    showEmailDialog = false
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = PolyPrimary)
-                        ) {
-                            Text("Sign In", color = Color.White)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showEmailDialog = false }) {
-                            Text("Cancel", color = PolyTextSecondary)
-                        }
-                    }
-                )
             }
         }
     }

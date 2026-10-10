@@ -45,4 +45,10 @@ object NetworkModule {
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
+
+    @Provides
+    @Singleton
+    fun provideGatewayAuthApi(impl: com.cutm.nt14.data.remote.GatewayAuthApiImpl): com.cutm.nt14.data.remote.GatewayAuthApi {
+        return impl
+    }
 }

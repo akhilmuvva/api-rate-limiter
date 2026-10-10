@@ -32,6 +32,7 @@ android {
         val sheetsApiKey = localProperties.getProperty("SHEETS_API_KEY") ?: ""
 
         buildConfigField("String", "WEB_CLIENT_ID", "\"$webClientId\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$webClientId\"")
         buildConfigField("String", "SHEETS_SPREADSHEET_ID", "\"$sheetsSpreadsheetId\"")
         buildConfigField("String", "SHEETS_API_KEY", "\"$sheetsApiKey\"")
 

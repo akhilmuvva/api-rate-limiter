@@ -21,6 +21,8 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.random.Random
 
+import com.cutm.nt14.gateway.core.requireAdmin
+
 /**
  * Control-plane traffic simulation routes.
  * Enforces ADMIN role verification.
@@ -34,10 +36,7 @@ fun Route.simulateRoutes(
     simulationScope: CoroutineScope = CoroutineScope(Dispatchers.Default)
 ) {
     post("/api/simulate") {
-        if (!call.isAdminUser(jwtService)) {
-            call.respond(HttpStatusCode.Forbidden, ApiMessage("Forbidden: Administrator privileges required to simulate traffic."))
-            return@post
-        }
+        if (!call.requireAdmin(jwtService)) return@post
 
         val req = call.receive<SimulateRequest>()
 

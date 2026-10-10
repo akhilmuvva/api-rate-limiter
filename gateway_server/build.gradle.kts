@@ -32,6 +32,10 @@ dependencies {
     // Logging
     implementation("ch.qos.logback:logback-classic:1.4.14")
 
+    // Google API Client for Google ID Token verification
+    implementation("com.google.api-client:google-api-client:2.7.0")
+    implementation("com.google.http-client:google-http-client-gson:1.45.0")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("io.ktor:ktor-server-tests-jvm:$ktorVersion")

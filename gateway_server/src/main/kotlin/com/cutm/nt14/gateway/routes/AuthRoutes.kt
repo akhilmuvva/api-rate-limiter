@@ -13,81 +13,14 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import org.slf4j.LoggerFactory
 
+import com.cutm.nt14.gateway.core.googleAuthRoute
+
 private val logger = LoggerFactory.getLogger("AuthRoutes")
 
 fun Route.authRoutes(jwtService: JwtService) {
+    googleAuthRoute(jwtService)
+
     route("/api/auth") {
-        /**
-         * Authenticates a Google user using their Google ID Token (JWT) or verified Google email.
-         * Generates and returns a signed Gateway Session JWT.
-         */
-        post("/google") {
-            try {
-                val req = call.receive<GoogleAuthRequest>()
-                
-                // 1. Authenticate Google user using cryptographically verified ID token
-                val verifiedPayload = if (!req.idToken.isNullOrBlank()) {
-                    jwtService.verifyGoogleIdToken(req.idToken)
-                } else null
-
-                val finalEmail: String
-                val finalName: String
-                val finalSub: String
-                val role: String
-
-                val adminEmailsEnv = System.getenv("ADMIN_EMAILS") ?: "akpolylance@gmail.com"
-                val adminEmails = adminEmailsEnv.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
-
-                if (verifiedPayload != null) {
-                    finalEmail = verifiedPayload.email.trim().lowercase()
-                    finalName = verifiedPayload.name ?: req.displayName ?: "Google User"
-                    finalSub = verifiedPayload.sub
-                    // Role derived ONLY from verified Google email
-                    role = if (adminEmails.contains(finalEmail)) "ADMIN" else "VIEWER"
-                    logger.info("Validated Google ID token for $finalEmail -> role=$role")
-                } else {
-                    // No valid Google ID token: NEVER trust client-supplied email for ADMIN role.
-                    // Fall back to unauthenticated guest VIEWER
-                    finalEmail = (req.email?.takeIf { it.isNotBlank() } ?: "guest@cutm.nt14").trim().lowercase()
-                    finalName = req.displayName ?: "Guest User"
-                    finalSub = "guest_" + java.util.UUID.randomUUID().toString().take(8)
-                    role = "VIEWER" // Strictest security: unverified guests are always VIEWER
-                    logger.info("Issued unverified guest session for $finalEmail with role=VIEWER")
-                }
-
-                val token = jwtService.generateToken(
-                    sub = finalSub,
-                    email = finalEmail,
-                    name = finalName,
-                    role = role,
-                    provider = if (verifiedPayload != null) "google" else "guest",
-                    expirationSeconds = 86400L // 24 hours
-                )
-
-                logger.info("Issued Gateway JWT for $finalEmail with role $role")
-
-                call.respond(
-                    HttpStatusCode.OK,
-                    AuthResponse(
-                        token = token,
-                        tokenType = "Bearer",
-                        expiresIn = 86400L,
-                        user = AuthUserInfo(
-                            email = finalEmail,
-                            name = finalName,
-                            role = role,
-                            provider = if (verifiedPayload != null) "google" else "guest"
-                        )
-                    )
-                )
-            } catch (e: Exception) {
-                logger.error("Error during Google JWT auth: ${e.message}", e)
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    ApiMessage("Google authentication failed: ${e.message}")
-                )
-            }
-        }
 
         /**
          * Issues a short-lived, single-use ticket for WebSocket authentication.

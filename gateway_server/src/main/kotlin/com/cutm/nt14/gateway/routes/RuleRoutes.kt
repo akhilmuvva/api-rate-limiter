@@ -12,19 +12,7 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 
-fun ApplicationCall.isAdminUser(jwtService: JwtService): Boolean {
-    val expectedApiKey = System.getenv("GATEWAY_API_KEY") ?: "dev-local-key"
-    val apiKeyHeader = request.headers["X-API-Key"] ?: request.queryParameters["api_key"]
-    if (apiKeyHeader == expectedApiKey) return true
-
-    val authHeader = request.headers["Authorization"]
-    val token = authHeader?.removePrefix("Bearer ")?.trim() ?: request.queryParameters["token"]
-    if (!token.isNullOrBlank()) {
-        val claims = jwtService.verifyToken(token)
-        if (claims?.role == "ADMIN") return true
-    }
-    return false
-}
+import com.cutm.nt14.gateway.core.requireAdmin
 
 fun Route.ruleRoutes(
     rateLimiter: RateLimiter,
@@ -71,10 +59,7 @@ fun Route.ruleRoutes(
 
         // POST /api/rules -> create or update rule (ADMIN only)
         post {
-            if (!call.isAdminUser(jwtService)) {
-                call.respond(HttpStatusCode.Forbidden, ApiMessage("Forbidden: Administrator privileges required."))
-                return@post
-            }
+            if (!call.requireAdmin(jwtService)) return@post
             val rule = call.receive<RateLimitRule>()
             rateLimiter.setRule(rule)
             webSocketManager.broadcast(
@@ -89,10 +74,7 @@ fun Route.ruleRoutes(
 
         // PUT /api/rules -> update rule (ADMIN only)
         put {
-            if (!call.isAdminUser(jwtService)) {
-                call.respond(HttpStatusCode.Forbidden, ApiMessage("Forbidden: Administrator privileges required."))
-                return@put
-            }
+            if (!call.requireAdmin(jwtService)) return@put
             val rule = call.receive<RateLimitRule>()
             rateLimiter.setRule(rule)
             webSocketManager.broadcast(
@@ -107,10 +89,7 @@ fun Route.ruleRoutes(
 
         // DELETE /api/rules/{endpoint...} -> remove rate limit rule (ADMIN only)
         delete("{endpoint...}") {
-            if (!call.isAdminUser(jwtService)) {
-                call.respond(HttpStatusCode.Forbidden, ApiMessage("Forbidden: Administrator privileges required."))
-                return@delete
-            }
+            if (!call.requireAdmin(jwtService)) return@delete
             val endpointPath = "/" + (call.parameters.getAll("endpoint")?.joinToString("/") ?: "")
             val removed = rateLimiter.removeRule(endpointPath)
             if (removed) {
@@ -139,10 +118,7 @@ fun Route.ruleRoutes(
 
         // DELETE /api/bans/{clientId...} -> lift active ban (ADMIN only)
         delete("{clientId...}") {
-            if (!call.isAdminUser(jwtService)) {
-                call.respond(HttpStatusCode.Forbidden, ApiMessage("Forbidden: Administrator privileges required."))
-                return@delete
-            }
+            if (!call.requireAdmin(jwtService)) return@delete
             val clientId = call.parameters.getAll("clientId")?.joinToString("/") ?: ""
             val unbanned = rateLimiter.anomalyDetector.unbanClient(clientId)
             if (unbanned) {

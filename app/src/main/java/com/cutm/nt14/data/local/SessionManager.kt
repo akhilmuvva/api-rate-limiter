@@ -87,6 +87,17 @@ class SessionManager @Inject constructor(
         }
     }
 
+    suspend fun save(token: String, role: String, email: String) {
+        val userRole = if (role.equals("ADMIN", ignoreCase = true)) UserRole.ADMIN else UserRole.VIEWER
+        saveSession(
+            email = email,
+            name = email.substringBefore("@"),
+            role = userRole,
+            provider = "google",
+            jwtToken = token
+        )
+    }
+
     suspend fun clearSession() {
         context.dataStore.edit { prefs ->
             prefs.clear()
