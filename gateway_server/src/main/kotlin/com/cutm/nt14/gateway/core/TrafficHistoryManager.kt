@@ -68,6 +68,31 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         return incident
     }
 
+    @Volatile private var baselineRps: Double = 5.0
+    @Volatile private var lastAnomalyCheckTime: Long = 0L
+
+    fun checkAggregateAnomaly(currentRps: Double): IncidentDto? {
+        val now = System.currentTimeMillis()
+        val window60s = now - 60_000L
+        val recentLogs60s = logsRingBuffer.filter { it.timestamp >= window60s }
+        val avgRps60s = (recentLogs60s.size / 60.0).coerceAtLeast(1.0)
+
+        // Exponential moving average update
+        baselineRps = (0.95 * baselineRps) + (0.05 * avgRps60s)
+
+        // Trigger if current RPS is significantly higher than baseline (at least 2.5x and >= 15 RPS)
+        if (currentRps >= (baselineRps * 2.5) && currentRps >= 15.0 && now - lastAnomalyCheckTime > 30_000L) {
+            lastAnomalyCheckTime = now
+            val surgePct = ((currentRps - baselineRps) / baselineRps * 100.0).roundToInt()
+            return recordIncident(
+                type = "Aggregate Traffic Anomaly",
+                severity = "CRITICAL",
+                detail = "Aggregate traffic surge detected: Current RPS %.1f exceeds baseline %.1f by %d%%".format(currentRps, baselineRps, surgePct)
+            )
+        }
+        return null
+    }
+
     fun getRecentLogs(limit: Int = 200, cursor: String? = null): List<RequestLogDto> {
         val all = logsRingBuffer.toList().reversed()
         if (cursor.isNullOrBlank()) {
@@ -171,14 +196,15 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         )
     }
 
-    fun buildSnapshot(rules: List<RateLimitRule>, bans: List<ActiveBanDto>): GatewayEvent {
+    fun buildSnapshot(rules: List<RateLimitRule>, bans: List<ActiveBanDto>, clients: List<ClientInfo> = emptyList()): GatewayEvent {
         return GatewayEvent(
             type = "snapshot",
             metrics = calculateCurrentMetrics(),
             rules = rules,
             activeBans = bans,
             logs = getRecentLogs(200),
-            incidents = getIncidents()
+            incidents = getIncidents(),
+            clients = clients
         )
     }
 }

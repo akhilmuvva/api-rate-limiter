@@ -96,23 +96,7 @@ class RateLimiter {
      * Prevents header spoofing by only honoring X-Forwarded-For if the immediate peer is a trusted proxy.
      */
     fun resolveClientId(call: ApplicationCall): String {
-        val remoteIp = call.request.origin.remoteHost
-        val trustedProxiesEnv = System.getenv("TRUSTED_PROXIES") ?: "127.0.0.1,::1,localhost"
-        val trustedProxies = trustedProxiesEnv.split(",").map { it.trim() }.toSet()
-
-        val isDirectProxy = trustedProxies.contains(remoteIp) || remoteIp == "127.0.0.1" || remoteIp == "0:0:0:0:0:0:0:1"
-        if (isDirectProxy) {
-            val forwarded = call.request.headers["X-Forwarded-For"]
-            if (!forwarded.isNullOrBlank()) {
-                return forwarded.split(",").first().trim()
-            }
-        }
-
-        val clientKey = call.request.headers["X-Client-ID"]
-        if (!clientKey.isNullOrBlank()) {
-            return clientKey.trim()
-        }
-        return remoteIp
+        return TrustedProxyResolver.resolveClientIp(call)
     }
 
     /**

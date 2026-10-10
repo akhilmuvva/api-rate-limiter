@@ -21,6 +21,7 @@ data class GatewayEvent(
     val type: String, // "snapshot" | "request" | "blocked_request" | "ip_blocked" | "metrics" | "ban" | "unban" | "rule_changed" | "incident"
     val id: String? = null,
     val ip: String? = null,
+    val clientId: String? = null,
     val endpoint: String? = null,
     val method: String? = null,
     val status: Int? = null,
@@ -35,7 +36,39 @@ data class GatewayEvent(
     val incidents: List<IncidentDto>? = null,
     val ban: ActiveBanDto? = null,
     val rule: RateLimitRule? = null,
-    val incident: IncidentDto? = null
+    val incident: IncidentDto? = null,
+    val clients: List<ClientInfo>? = null,
+    val client: ClientInfo? = null
+)
+
+@Serializable
+data class ClientInfo(
+    val id: String,
+    val maskedId: String,
+    val requestsPerMin: Double,
+    val totalRequests: Long,
+    val throttledCount: Long,
+    val lastSeen: Long,
+    val status: String, // "active", "throttled", "banned"
+    val isDemo: Boolean = false
+)
+
+@Serializable
+data class WhoAmIResponse(
+    val resolvedIp: String,
+    val immediatePeer: String,
+    val rawXForwardedFor: String? = null,
+    val cfConnectingIp: String? = null,
+    val isPeerTrusted: Boolean,
+    val authenticatedUser: String? = null,
+    val role: String? = null
+)
+
+@Serializable
+data class CreateBanRequest(
+    val clientId: String,
+    val durationMinutes: Long = 60L,
+    val reason: String = "Manual ban by Administrator"
 )
 
 @Serializable

@@ -31,10 +31,11 @@ class WebSocketManager {
 
     var historyManager: TrafficHistoryManager? = null
     var rateLimiter: RateLimiter? = null
+    var clientTracker: ClientTracker? = null
 
-    fun register(session: DefaultWebSocketServerSession, lastEventId: String? = null) {
+    fun register(session: DefaultWebSocketServerSession, lastEventId: String? = null, isAdmin: Boolean = false) {
         sessions.add(session)
-        logger.info("New WebSocket client connected (lastEventId=$lastEventId). Active subscribers: ${sessions.size}")
+        logger.info("New WebSocket client connected (lastEventId=$lastEventId, isAdmin=$isAdmin). Active subscribers: ${sessions.size}")
 
         // Immediately send initial snapshot or replay events from lastEventId
         scope.launch {
@@ -43,6 +44,7 @@ class WebSocketManager {
                 val bans = rateLimiter?.anomalyDetector?.getActiveBans()?.map { (ip, record) ->
                     ActiveBanDto(clientId = ip, reason = record.reason, expiresAt = record.bannedUntil)
                 } ?: emptyList()
+                val clients = clientTracker?.getAllClients(isAdmin, rateLimiter?.anomalyDetector) ?: emptyList()
 
                 val missedLogs = if (!lastEventId.isNullOrBlank()) {
                     historyManager?.getLogsSince(lastEventId)
@@ -67,18 +69,20 @@ class WebSocketManager {
                         type = "metrics",
                         metrics = historyManager?.calculateCurrentMetrics() ?: GatewayMetrics(),
                         rules = rules,
-                        activeBans = bans
+                        activeBans = bans,
+                        clients = clients
                     )
                     session.send(Frame.Text(json.encodeToString(metricsEvent)))
                     logger.debug("Replayed ${missedLogs.size} events to resumed client since $lastEventId")
                 } else {
-                    val snapshot = historyManager?.buildSnapshot(rules, bans) ?: GatewayEvent(
+                    val snapshot = historyManager?.buildSnapshot(rules, bans, clients) ?: GatewayEvent(
                         type = "snapshot",
                         metrics = GatewayMetrics(),
                         rules = rules,
                         activeBans = bans,
                         logs = emptyList(),
-                        incidents = emptyList()
+                        incidents = emptyList(),
+                        clients = clients
                     )
                     session.send(Frame.Text(json.encodeToString(snapshot)))
                     logger.debug("Sent initial state snapshot to new subscriber")

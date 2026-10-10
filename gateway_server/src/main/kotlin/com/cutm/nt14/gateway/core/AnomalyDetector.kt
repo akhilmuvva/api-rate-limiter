@@ -103,6 +103,8 @@ class AnomalyDetector(
         return ban
     }
 
+    fun isBanned(clientId: String): Boolean = checkBan(clientId) != null
+
     fun banClient(clientId: String, durationSeconds: Long, reason: String): BanRecord {
         val until = System.currentTimeMillis() + (durationSeconds * 1000L)
         val record = BanRecord(bannedUntil = until, reason = reason)

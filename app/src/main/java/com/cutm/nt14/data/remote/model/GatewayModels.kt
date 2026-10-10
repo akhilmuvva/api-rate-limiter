@@ -65,3 +65,14 @@ data class SimulateRequestDto(
     val profile: String = "burst",
     val sourceIps: List<String> = emptyList()
 )
+
+data class ClientInfoDto(
+    val id: String,
+    val maskedId: String,
+    val requestsPerMin: Double = 0.0,
+    val totalRequests: Long = 0L,
+    val throttledCount: Long = 0L,
+    val lastSeen: Long = 0L,
+    val status: String = "active", // "active", "throttled", "banned"
+    val isDemo: Boolean = false
+)

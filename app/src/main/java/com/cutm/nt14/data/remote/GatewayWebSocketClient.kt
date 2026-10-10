@@ -96,6 +96,9 @@ class GatewayWebSocketClient @Inject constructor(
     private val _liveLogs = MutableStateFlow<List<RequestLogDto>>(emptyList())
     val liveLogs: StateFlow<List<RequestLogDto>> = _liveLogs.asStateFlow()
 
+    private val _liveClients = MutableStateFlow<List<ClientInfoDto>>(emptyList())
+    val liveClients: StateFlow<List<ClientInfoDto>> = _liveClients.asStateFlow()
+
     init {
         scope.launch {
             sessionManager.gatewayHost.collect { host ->
@@ -279,6 +282,26 @@ class GatewayWebSocketClient @Inject constructor(
         )
     }
 
+    private fun parseClientsJson(cArr: JSONArray): List<ClientInfoDto> {
+        val clients = mutableListOf<ClientInfoDto>()
+        for (i in 0 until cArr.length()) {
+            val cObj = cArr.getJSONObject(i)
+            clients.add(
+                ClientInfoDto(
+                    id = cObj.optString("id"),
+                    maskedId = cObj.optString("maskedId", cObj.optString("id")),
+                    requestsPerMin = cObj.optDouble("requestsPerMin", 0.0),
+                    totalRequests = cObj.optLong("totalRequests", 0L),
+                    throttledCount = cObj.optLong("throttledCount", 0L),
+                    lastSeen = cObj.optLong("lastSeen", 0L),
+                    status = cObj.optString("status", "active"),
+                    isDemo = cObj.optBoolean("isDemo", false)
+                )
+            )
+        }
+        return clients
+    }
+
     private fun handleLiveEvent(jsonStr: String) {
         scope.launch {
             try {
@@ -372,6 +395,36 @@ class GatewayWebSocketClient @Inject constructor(
                                 )
                             }
                             _liveIncidents.value = incidents
+                        }
+
+                        // 6. Snapshot clients
+                        val cArr = json.optJSONArray("clients")
+                        if (cArr != null) {
+                            _liveClients.value = parseClientsJson(cArr)
+                        }
+                    }
+
+                    "client_update" -> {
+                        val cArr = json.optJSONArray("clients")
+                        if (cArr != null) {
+                            _liveClients.value = parseClientsJson(cArr)
+                        } else {
+                            val cObj = json.optJSONObject("client")
+                            if (cObj != null) {
+                                val updatedClient = ClientInfoDto(
+                                    id = cObj.optString("id"),
+                                    maskedId = cObj.optString("maskedId", cObj.optString("id")),
+                                    requestsPerMin = cObj.optDouble("requestsPerMin", 0.0),
+                                    totalRequests = cObj.optLong("totalRequests", 0L),
+                                    throttledCount = cObj.optLong("throttledCount", 0L),
+                                    lastSeen = cObj.optLong("lastSeen", 0L),
+                                    status = cObj.optString("status", "active"),
+                                    isDemo = cObj.optBoolean("isDemo", false)
+                                )
+                                val current = _liveClients.value.filter { it.id != updatedClient.id }.toMutableList()
+                                current.add(updatedClient)
+                                _liveClients.value = current.sortedByDescending { it.requestsPerMin }
+                            }
                         }
                     }
 
@@ -547,6 +600,7 @@ class GatewayWebSocketClient @Inject constructor(
         fetchStats()
         fetchRules()
         fetchBans()
+        fetchClients()
         fetchLogs(50)
     }
 
@@ -668,6 +722,49 @@ class GatewayWebSocketClient @Inject constructor(
         }
     }
 
+    suspend fun fetchClients(): List<ClientInfoDto> = withContext(Dispatchers.IO) {
+        val url = buildHttpUrl(_connectedHost.value, "/api/clients")
+        try {
+            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string().orEmpty()
+                    val arr = JSONArray(body)
+                    val list = parseClientsJson(arr)
+                    _liveClients.value = list
+                    list
+                } else emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun banClient(clientId: String, durationMinutes: Long = 60, reason: String = "Manual ban"): Boolean = withContext(Dispatchers.IO) {
+        val url = buildHttpUrl(_connectedHost.value, "/api/bans")
+        try {
+            val json = JSONObject().apply {
+                put("clientId", clientId)
+                put("durationMinutes", durationMinutes)
+                put("reason", reason)
+            }.toString()
+            val req = attachAuthHeaders(
+                Request.Builder()
+                    .url(url)
+                    .post(json.toRequestBody("application/json".toMediaType()))
+            ).build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    fetchBans()
+                    fetchClients()
+                    true
+                } else false
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun unbanClient(clientId: String): Boolean = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/bans/$clientId")
         try {
@@ -675,6 +772,7 @@ class GatewayWebSocketClient @Inject constructor(
             client.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     fetchBans()
+                    fetchClients()
                     true
                 } else false
             }

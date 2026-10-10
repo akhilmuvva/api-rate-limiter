@@ -11,3 +11,4 @@
 local.properties
 .jdk17/
 **/build/
+security_report.csv

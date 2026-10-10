@@ -14,14 +14,52 @@ import io.ktor.server.routing.*
 
 import com.cutm.nt14.gateway.core.requireAdmin
 import com.cutm.nt14.gateway.core.requireAuth
+import com.cutm.nt14.gateway.core.ClientTracker
+import com.cutm.nt14.gateway.core.TrustedProxyResolver
+import io.ktor.http.HttpHeaders
+import io.ktor.server.plugins.origin
 
 fun Route.ruleRoutes(
     rateLimiter: RateLimiter,
     webSocketManager: WebSocketManager,
     historyManager: TrafficHistoryManager,
     jwtService: JwtService,
-    startTimeMs: Long = System.currentTimeMillis()
+    startTimeMs: Long = System.currentTimeMillis(),
+    clientTracker: ClientTracker = ClientTracker()
 ) {
+    // GET /api/whoami -> returns resolved IP & raw forwarding headers (ADMIN only)
+    get("/api/whoami") {
+        if (!call.requireAdmin(jwtService)) return@get
+        val bearer = call.request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ")?.trim()
+            ?: call.request.queryParameters["token"]
+        val claims = bearer?.let { jwtService.verify(it) }
+
+        val remoteHost = call.request.origin.remoteHost
+        val trustedSet = TrustedProxyResolver.getTrustedSet()
+        val isTrusted = TrustedProxyResolver.isTrustedProxy(remoteHost, trustedSet)
+        val resolvedIp = TrustedProxyResolver.resolveClientIp(call)
+
+        call.respond(
+            WhoAmIResponse(
+                resolvedIp = resolvedIp,
+                immediatePeer = remoteHost,
+                rawXForwardedFor = call.request.headers["X-Forwarded-For"],
+                cfConnectingIp = call.request.headers["CF-Connecting-IP"],
+                isPeerTrusted = isTrusted,
+                authenticatedUser = claims?.email,
+                role = claims?.role
+            )
+        )
+    }
+
+    // GET /api/clients -> per-client real-time traffic & status (requires valid JWT, masked for VIEWER)
+    get("/api/clients") {
+        val claims = call.requireAuth(jwtService) ?: return@get
+        val isAdmin = claims.role == "ADMIN"
+        val clients = clientTracker.getAllClients(isAdmin, rateLimiter.anomalyDetector)
+        call.respond(clients)
+    }
+
     // GET /api/stats -> live telemetry & server health (requires valid JWT)
     get("/api/stats") {
         if (call.requireAuth(jwtService) == null) return@get
@@ -121,6 +159,24 @@ fun Route.ruleRoutes(
                 ActiveBanDto(clientId = ip, reason = record.reason, expiresAt = record.bannedUntil)
             }
             call.respond(activeBans)
+        }
+
+        // POST /api/bans -> create manual ban (ADMIN only)
+        post {
+            if (!call.requireAdmin(jwtService)) return@post
+            val req = call.receive<CreateBanRequest>()
+            val durationSeconds = (req.durationMinutes.coerceIn(1, 1440)) * 60L
+            val record = rateLimiter.anomalyDetector.banClient(req.clientId, durationSeconds, req.reason)
+            val banDto = ActiveBanDto(clientId = req.clientId, reason = req.reason, expiresAt = record.bannedUntil)
+            webSocketManager.broadcast(
+                GatewayEvent(
+                    type = "ban",
+                    clientId = req.clientId,
+                    ip = req.clientId,
+                    ban = banDto
+                )
+            )
+            call.respond(HttpStatusCode.Created, banDto)
         }
 
         // DELETE /api/bans/{clientId...} -> lift active ban (ADMIN only)

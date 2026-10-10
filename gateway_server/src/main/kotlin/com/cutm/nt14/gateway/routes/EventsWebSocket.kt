@@ -4,6 +4,8 @@ import com.cutm.nt14.gateway.core.JwtService
 import com.cutm.nt14.gateway.core.WebSocketManager
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import kotlinx.coroutines.channels.consumeEach
 import org.slf4j.LoggerFactory
 
@@ -21,38 +23,29 @@ fun Route.eventsWebSocket(webSocketManager: WebSocketManager, jwtService: JwtSer
             ?: call.request.queryParameters["token"]
         val ticketParam = call.request.queryParameters["ticket"]
 
-        val clientEmail: String
-        val clientRole: String
-
-        if (!ticketParam.isNullOrBlank()) {
-            val ticketInfo = jwtService.consumeWsTicket(ticketParam)
-            if (ticketInfo != null) {
-                clientRole = ticketInfo.role
-                clientEmail = ticketInfo.email
-            } else {
-                clientRole = "VIEWER"
-                clientEmail = "guest@cutm.nt14"
+        val authenticatedInfo: Pair<String, String>? = when {
+            !ticketParam.isNullOrBlank() -> {
+                jwtService.consumeWsTicket(ticketParam)?.let { it.role to it.email }
             }
-        } else if (!bearerToken.isNullOrBlank()) {
-            val claims = jwtService.verifyToken(bearerToken)
-            if (claims != null) {
-                clientRole = claims.role
-                clientEmail = claims.email
-            } else {
-                clientRole = "VIEWER"
-                clientEmail = "guest@cutm.nt14"
+            !bearerToken.isNullOrBlank() -> {
+                jwtService.verifyToken(bearerToken)?.let { it.role to it.email }
             }
-        } else {
-            clientRole = "VIEWER"
-            clientEmail = "guest@cutm.nt14"
+            else -> null
         }
+
+        if (authenticatedInfo == null) {
+            close(io.ktor.websocket.CloseReason(io.ktor.websocket.CloseReason.Codes.VIOLATED_POLICY, "Authentication required: provide ?ticket= or Authorization header"))
+            return@webSocket
+        }
+
+        val (clientRole, clientEmail) = authenticatedInfo
 
         val lastEventId = call.request.queryParameters["lastEventId"]
             ?: call.request.headers["Last-Event-ID"]
 
         logger.info("Accepted WebSocket subscriber for $clientEmail (role=$clientRole, lastEventId=$lastEventId)")
 
-        webSocketManager.register(this, lastEventId)
+        webSocketManager.register(this, lastEventId, isAdmin = clientRole == "ADMIN")
         try {
             incoming.consumeEach { frame ->
                 logger.trace("Received frame from client ($clientEmail): ${frame.frameType}")

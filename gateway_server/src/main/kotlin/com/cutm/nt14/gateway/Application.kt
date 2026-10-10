@@ -1,5 +1,6 @@
 package com.cutm.nt14.gateway
 
+import com.cutm.nt14.gateway.core.ClientTracker
 import com.cutm.nt14.gateway.core.JwtService
 import com.cutm.nt14.gateway.core.PolyLanceUpstream
 import com.cutm.nt14.gateway.core.RateLimitEvaluation
@@ -57,12 +58,14 @@ fun Application.module() {
     val rateLimiter = RateLimiter()
     val webSocketManager = WebSocketManager()
     val historyManager = TrafficHistoryManager()
+    val clientTracker = ClientTracker()
     val jwtService = JwtService()
     val polyLanceUpstream = PolyLanceUpstream()
     val serverStartTime = System.currentTimeMillis()
 
     webSocketManager.historyManager = historyManager
     webSocketManager.rateLimiter = rateLimiter
+    webSocketManager.clientTracker = clientTracker
 
     val initAdminTicket = jwtService.createWsTicket(role = "ADMIN", email = "admin@cutm.nt14.com", durationSeconds = 86400L)
     LoggerFactory.getLogger("GatewayServer").info(
@@ -121,6 +124,10 @@ fun Application.module() {
 
     // 5. Rate Limiting Gateway Interceptor (intercepting /api/* demo and proxied routes)
     intercept(ApplicationCallPipeline.Plugins) {
+        call.response.header("X-Content-Type-Options", "nosniff")
+        call.response.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        call.response.header("X-Frame-Options", "DENY")
+
         val path = call.request.path()
         val isControlPlane = path.startsWith("/api/rules") ||
                 path.startsWith("/api/simulate") ||
@@ -161,6 +168,11 @@ fun Application.module() {
                 call.response.header("X-Authenticated-User", jwtClaims.email)
                 call.response.header("X-Authenticated-Role", jwtClaims.role)
             }
+
+            val isDemo = path.contains("simulate") ||
+                clientId.startsWith("demo:") ||
+                clientId in listOf("192.168.1.10", "192.168.1.25", "10.0.0.5", "198.51.100.42", "203.0.113.19")
+            clientTracker.recordRequest(clientId, isThrottled = !evaluation.allowed, isDemo = isDemo)
 
             if (!evaluation.allowed) {
                 val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
@@ -255,15 +267,14 @@ fun Application.module() {
                 HealthResponse(
                     status = "UP",
                     subscribers = webSocketManager.activeSubscriberCount(),
-                    uptimeMs = System.currentTimeMillis() - serverStartTime,
-                    metrics = historyManager.calculateCurrentMetrics()
+                    uptimeMs = System.currentTimeMillis() - serverStartTime
                 )
             )
         }
 
         authRoutes(jwtService)
         demoRoutes()
-        ruleRoutes(rateLimiter, webSocketManager, historyManager, jwtService, serverStartTime)
+        ruleRoutes(rateLimiter, webSocketManager, historyManager, jwtService, serverStartTime, clientTracker)
         simulateRoutes(rateLimiter, webSocketManager, historyManager, jwtService)
         eventsWebSocket(webSocketManager, jwtService)
     }
@@ -276,6 +287,7 @@ fun Application.module() {
             cycle++
             try {
                 rateLimiter.cleanupIdleLimiters()
+                clientTracker.cleanExpired()
                 if (cycle % 4 == 0) {
                     polyLanceUpstream.keepAlive()
                 }
@@ -291,6 +303,10 @@ fun Application.module() {
             try {
                 if (webSocketManager.activeSubscriberCount() > 0) {
                     val metrics = historyManager.calculateCurrentMetrics()
+                    val anomaly = historyManager.checkAggregateAnomaly(metrics.rps)
+                    if (anomaly != null) {
+                        webSocketManager.broadcast(GatewayEvent(type = "incident", incident = anomaly))
+                    }
                     webSocketManager.broadcast(
                         GatewayEvent(
                             type = "metrics",
@@ -298,6 +314,16 @@ fun Application.module() {
                             metrics = metrics
                         )
                     )
+                    val clientList = clientTracker.getAllClients(isAdmin = false, rateLimiter.anomalyDetector)
+                    if (clientList.isNotEmpty()) {
+                        webSocketManager.broadcast(
+                            GatewayEvent(
+                                type = "client_update",
+                                timestamp = System.currentTimeMillis() / 1000.0,
+                                clients = clientList
+                            )
+                        )
+                    }
                 }
             } catch (_: Exception) {
             }

@@ -32,6 +32,7 @@ class GatewayRepository @Inject constructor(
     val bans: StateFlow<List<ActiveBanDto>> = wsClient.liveBans
     val incidents: StateFlow<List<IncidentDto>> = wsClient.liveIncidents
     val logs: StateFlow<List<RequestLogDto>> = wsClient.liveLogs
+    val clients: StateFlow<List<ClientInfoDto>> = wsClient.liveClients
 
     val userRole: StateFlow<UserRole> = sessionManager.userRole.stateIn(
         scope, SharingStarted.Eagerly, UserRole.VIEWER
@@ -53,6 +54,10 @@ class GatewayRepository @Inject constructor(
 
     suspend fun deleteRule(endpoint: String): Boolean {
         return wsClient.deleteRule(endpoint)
+    }
+
+    suspend fun banClient(clientId: String, durationMinutes: Long = 60, reason: String = "Manual ban"): Boolean {
+        return wsClient.banClient(clientId, durationMinutes, reason)
     }
 
     suspend fun unbanClient(clientId: String): Boolean {
