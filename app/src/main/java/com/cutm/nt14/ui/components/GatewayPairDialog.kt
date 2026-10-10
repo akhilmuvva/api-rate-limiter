@@ -138,7 +138,7 @@ fun GatewayPairDialog(
                         badge = "Render",
                         onClick = {
                             selectedPreset = "cloud"
-                            pairInput = "https://nt14-gateway.onrender.com"
+                            pairInput = "https://api-rate-limiter-gateway-n0ab.onrender.com"
                         },
                         modifier = Modifier.weight(1f)
                     )

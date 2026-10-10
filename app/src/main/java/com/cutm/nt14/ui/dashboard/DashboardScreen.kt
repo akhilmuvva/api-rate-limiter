@@ -1864,7 +1864,7 @@ fun WhiteHostConfigDialog(
                             hostInput = "192.168.1.100:8000"
                         }
                         WhitePresetChip("Cloud Gateway (Render)") {
-                            hostInput = "https://nt14-gateway.onrender.com"
+                            hostInput = "https://api-rate-limiter-gateway-n0ab.onrender.com"
                         }
                     }
                 }
