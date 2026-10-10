@@ -235,3 +235,13 @@ data class MeResponse(
     val issuedAt: Long,
     val expiresAt: Long
 )
+
+@Serializable
+data class StatsResponse(
+    val status: String,
+    val uptimeMs: Long,
+    val subscribers: Int,
+    val activeBansCount: Int,
+    val rulesCount: Int,
+    val metrics: GatewayMetrics
+)

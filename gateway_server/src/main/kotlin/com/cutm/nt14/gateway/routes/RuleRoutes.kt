@@ -37,13 +37,13 @@ fun Route.ruleRoutes(
     get("/api/stats") {
         val metrics = historyManager.calculateCurrentMetrics()
         call.respond(
-            mapOf(
-                "status" to "UP",
-                "uptimeMs" to (System.currentTimeMillis() - startTimeMs),
-                "subscribers" to webSocketManager.activeSubscriberCount(),
-                "activeBansCount" to rateLimiter.anomalyDetector.getActiveBans().size,
-                "rulesCount" to rateLimiter.getAllRules().size,
-                "metrics" to metrics
+            StatsResponse(
+                status = "UP",
+                uptimeMs = System.currentTimeMillis() - startTimeMs,
+                subscribers = webSocketManager.activeSubscriberCount(),
+                activeBansCount = rateLimiter.anomalyDetector.getActiveBans().size,
+                rulesCount = rateLimiter.getAllRules().size,
+                metrics = metrics
             )
         )
     }
