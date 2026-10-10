@@ -204,3 +204,34 @@ data class AuthUserInfo(
     val role: String,
     val provider: String = "google"
 )
+
+@Serializable
+data class PairResponse(
+    val host: String,
+    val wss: String,
+    val ticket: String,
+    val role: String,
+    val email: String,
+    val pairingUri: String,
+    val expiresIn: Long
+)
+
+@Serializable
+data class TicketResponse(
+    val ticket: String,
+    val role: String,
+    val email: String,
+    val expiresIn: Long
+)
+
+@Serializable
+data class MeResponse(
+    val valid: Boolean,
+    val sub: String,
+    val email: String,
+    val name: String,
+    val role: String,
+    val issuer: String,
+    val issuedAt: Long,
+    val expiresAt: Long
+)

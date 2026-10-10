@@ -2,10 +2,7 @@ package com.cutm.nt14.gateway.routes
 
 import com.cutm.nt14.gateway.core.JwtClaims
 import com.cutm.nt14.gateway.core.JwtService
-import com.cutm.nt14.gateway.models.ApiMessage
-import com.cutm.nt14.gateway.models.AuthResponse
-import com.cutm.nt14.gateway.models.AuthUserInfo
-import com.cutm.nt14.gateway.models.GoogleAuthRequest
+import com.cutm.nt14.gateway.models.*
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
@@ -108,11 +105,11 @@ fun Route.authRoutes(jwtService: JwtService) {
             val ticket = jwtService.createWsTicket(role, email, durationSeconds = 60L)
             call.respond(
                 HttpStatusCode.OK,
-                mapOf(
-                    "ticket" to ticket,
-                    "role" to role,
-                    "email" to email,
-                    "expiresIn" to 60
+                TicketResponse(
+                    ticket = ticket,
+                    role = role,
+                    email = email,
+                    expiresIn = 60L
                 )
             )
         }
@@ -137,15 +134,15 @@ fun Route.authRoutes(jwtService: JwtService) {
 
             call.respond(
                 HttpStatusCode.OK,
-                mapOf(
-                    "valid" to true,
-                    "sub" to claims.sub,
-                    "email" to claims.email,
-                    "name" to claims.name,
-                    "role" to claims.role,
-                    "issuer" to claims.iss,
-                    "issuedAt" to claims.iat,
-                    "expiresAt" to claims.exp
+                MeResponse(
+                    valid = true,
+                    sub = claims.sub,
+                    email = claims.email,
+                    name = claims.name,
+                    role = claims.role,
+                    issuer = claims.iss,
+                    issuedAt = claims.iat,
+                    expiresAt = claims.exp
                 )
             )
         }
@@ -167,14 +164,14 @@ fun Route.authRoutes(jwtService: JwtService) {
 
             call.respond(
                 HttpStatusCode.OK,
-                mapOf(
-                    "host" to baseUrl,
-                    "wss" to wsUrl,
-                    "ticket" to ticket,
-                    "role" to "ADMIN",
-                    "email" to adminEmail,
-                    "pairingUri" to pairingUri,
-                    "expiresIn" to 600
+                PairResponse(
+                    host = baseUrl,
+                    wss = wsUrl,
+                    ticket = ticket,
+                    role = "ADMIN",
+                    email = adminEmail,
+                    pairingUri = pairingUri,
+                    expiresIn = 600L
                 )
             )
         }
