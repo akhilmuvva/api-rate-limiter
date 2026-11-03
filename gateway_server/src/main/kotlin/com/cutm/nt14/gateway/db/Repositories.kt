@@ -399,6 +399,13 @@ class BanStore(private val db: GatewayDatabase) {
 }
 
 class IncidentStore(private val db: GatewayDatabase) {
+    private fun ResultSet.toIncident() = IncidentDto(
+        id = getString("id"), type = getString("type"), severity = getString("severity"),
+        detail = getString("detail"), timestamp = getTimestamp("ts").time,
+        targetId = getLong("target_id").takeIf { !wasNull() },
+        resolvedAt = getTimestamp("resolved_at")?.time
+    )
+
     fun insert(i: IncidentDto, targetId: Long? = null) = db.withConnection { c ->
         c.prepareStatement("INSERT INTO incidents (id, ts, type, severity, detail, target_id) VALUES (?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING").use { ps ->
             ps.setString(1, i.id); ps.setTimestamp(2, Timestamp(i.timestamp)); ps.setString(3, i.type)
@@ -407,9 +414,16 @@ class IncidentStore(private val db: GatewayDatabase) {
             ps.executeUpdate()
         }
     }
-    fun resolve(id: String, at: Long = System.currentTimeMillis()) = db.withConnection { c ->
-        c.prepareStatement("UPDATE incidents SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL").use {
-            it.setTimestamp(1, Timestamp(at)); it.setString(2, id); it.executeUpdate()
+    fun resolve(id: String, at: Long = System.currentTimeMillis()): IncidentDto? = db.withConnection { c ->
+        c.prepareStatement("UPDATE incidents SET resolved_at = COALESCE(resolved_at, ?) WHERE id = ? RETURNING *").use { ps ->
+            ps.setTimestamp(1, Timestamp(at)); ps.setString(2, id)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.toIncident() else null }
+        }
+    }
+    fun resolveForTarget(targetId: Long, at: Long = System.currentTimeMillis()): List<String> = db.withConnection { c ->
+        c.prepareStatement("UPDATE incidents SET resolved_at = ? WHERE target_id = ? AND resolved_at IS NULL RETURNING id").use { ps ->
+            ps.setTimestamp(1, Timestamp(at)); ps.setLong(2, targetId)
+            ps.executeQuery().use { rs -> generateSequence { if (rs.next()) rs.getString("id") else null }.toList() }
         }
     }
     fun openForTarget(targetId: Long): String? = db.withConnection { c ->
@@ -420,14 +434,7 @@ class IncidentStore(private val db: GatewayDatabase) {
     fun recent(limit: Int = 50): List<IncidentDto> = db.withConnection { c ->
         c.prepareStatement("SELECT * FROM incidents ORDER BY ts DESC LIMIT ?").use { ps ->
             ps.setInt(1, limit)
-            ps.executeQuery().use { rs -> generateSequence {
-                if (!rs.next()) null else IncidentDto(
-                    id = rs.getString("id"), type = rs.getString("type"), severity = rs.getString("severity"),
-                    detail = rs.getString("detail"), timestamp = rs.getTimestamp("ts").time,
-                    targetId = rs.getLong("target_id").takeIf { !rs.wasNull() },
-                    resolvedAt = rs.getTimestamp("resolved_at")?.time
-                )
-            }.toList() }
+            ps.executeQuery().use { rs -> generateSequence { if (rs.next()) rs.toIncident() else null }.toList() }
         }
     }
 }
@@ -436,7 +443,9 @@ class TargetStore(private val db: GatewayDatabase) {
     private fun ResultSet.toTarget() = MonitoredTarget(
         id = getLong("id"), name = getString("name"), url = getString("url"), method = getString("method"),
         expectedStatus = getInt("expected_status"), intervalSec = getInt("interval_sec"),
-        timeoutMs = getInt("timeout_ms"), enabled = getBoolean("enabled")
+        timeoutMs = getInt("timeout_ms"), enabled = getBoolean("enabled"),
+        source = runCatching { getString("source") }.getOrNull() ?: "real",
+        synthetic = runCatching { getBoolean("synthetic") }.getOrDefault(false)
     )
     fun all(): List<MonitoredTarget> = db.withConnection { c ->
         c.createStatement().use { st -> st.executeQuery("SELECT * FROM monitored_targets ORDER BY id").use { rs ->
@@ -448,22 +457,28 @@ class TargetStore(private val db: GatewayDatabase) {
     }
     fun create(t: TargetRequest): MonitoredTarget = db.withConnection { c ->
         c.prepareStatement(
-            """INSERT INTO monitored_targets (name, url, method, expected_status, interval_sec, timeout_ms, enabled)
-               VALUES (?,?,?,?,?,?,?) RETURNING *"""
+            """INSERT INTO monitored_targets (name, url, method, expected_status, interval_sec, timeout_ms, enabled, source, synthetic)
+               VALUES (?,?,?,?,?,?,?,?,?) RETURNING *"""
         ).use { ps -> bindTarget(ps, t); ps.executeQuery().use { rs -> rs.next(); rs.toTarget() } }
     }
     fun update(id: Long, t: TargetRequest): MonitoredTarget? = db.withConnection { c ->
         c.prepareStatement(
-            """UPDATE monitored_targets SET name=?, url=?, method=?, expected_status=?, interval_sec=?, timeout_ms=?, enabled=?
+            """UPDATE monitored_targets SET name=?, url=?, method=?, expected_status=?, interval_sec=?, timeout_ms=?, enabled=?, source=?, synthetic=?
                WHERE id = ? RETURNING *"""
-        ).use { ps -> bindTarget(ps, t); ps.setLong(8, id); ps.executeQuery().use { rs -> if (rs.next()) rs.toTarget() else null } }
+        ).use { ps -> bindTarget(ps, t); ps.setLong(10, id); ps.executeQuery().use { rs -> if (rs.next()) rs.toTarget() else null } }
     }
     fun delete(id: Long): Boolean = db.withConnection { c ->
+        c.prepareStatement("UPDATE incidents SET resolved_at = COALESCE(resolved_at, now()) WHERE target_id = ? AND resolved_at IS NULL").use {
+            it.setLong(1, id); it.executeUpdate()
+        }
         c.prepareStatement("DELETE FROM monitored_targets WHERE id = ?").use { it.setLong(1, id); it.executeUpdate() > 0 }
     }
     private fun bindTarget(ps: PreparedStatement, t: TargetRequest) {
+        val src = t.source.trim().lowercase().ifBlank { if (t.synthetic) "synthetic" else "real" }
+        val isSyn = t.synthetic || src in setOf("synthetic", "test", "demo")
         ps.setString(1, t.name.trim()); ps.setString(2, t.url.trim()); ps.setString(3, t.method.uppercase())
         ps.setInt(4, t.expectedStatus); ps.setInt(5, t.intervalSec); ps.setInt(6, t.timeoutMs); ps.setBoolean(7, t.enabled)
+        ps.setString(8, src); ps.setBoolean(9, isSyn)
     }
 }
 

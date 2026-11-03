@@ -173,12 +173,32 @@ fun Route.ruleRoutes(
     // GET /api/incidents -> recent security & target-down incidents (requires valid JWT)
     get("/api/incidents") {
         if (call.requireAuth(jwtService) == null) return@get
+        val openOnly = call.request.queryParameters["open"]?.toBooleanStrictOrNull() ?: false
         val incidents = if (persistence != null) {
             persistence.incidents.recent(50)
         } else {
             historyManager.getIncidents()
         }
-        call.respond(incidents)
+        call.respond(if (openOnly) incidents.filter { it.resolvedAt == null } else incidents)
+    }
+
+    // PATCH /api/incidents/{id}/resolve -> mark an incident resolved (ADMIN only)
+    patch("/api/incidents/{id}/resolve") {
+        if (!call.requireAdmin(jwtService)) return@patch
+        val id = call.parameters["id"]?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return@patch call.respond(HttpStatusCode.BadRequest, ApiMessage("Missing incident id"))
+        val now = System.currentTimeMillis()
+        val resolved = if (persistence != null) {
+            persistence.incidents.resolve(id, now)?.also { historyManager.resolveIncident(id, it.resolvedAt ?: now) }
+        } else {
+            historyManager.resolveIncident(id, now)
+        }
+        if (resolved == null) {
+            call.respond(HttpStatusCode.NotFound, ApiMessage("Incident $id not found"))
+        } else {
+            webSocketManager.broadcast(GatewayEvent(type = "incident", incident = resolved))
+            call.respond(HttpStatusCode.OK, resolved)
+        }
     }
 
     // GET /api/export?from&to&format=csv&source&status&client -> CSV export (ADMIN only)
@@ -212,9 +232,12 @@ fun Route.ruleRoutes(
     }
 
     // GET /api/targets/status -> live status, latency sparklines & 24h uptime for all targets (requires valid JWT)
+    // Excludes synthetic/test targets by default unless ?includeSynthetic=true
     get("/api/targets/status") {
         if (call.requireAuth(jwtService) == null) return@get
-        val statuses = persistence?.monitor?.statusAll() ?: emptyList()
+        val includeSynthetic = call.request.queryParameters["includeSynthetic"]?.toBooleanStrictOrNull() ?: false
+        val source = call.request.queryParameters["source"]
+        val statuses = persistence?.monitor?.statusAll(includeSynthetic = includeSynthetic, source = source) ?: emptyList()
         call.respond(statuses)
     }
 
@@ -271,10 +294,12 @@ fun Route.ruleRoutes(
             val db = persistence ?: return@delete call.respond(HttpStatusCode.ServiceUnavailable, ApiMessage("Database persistence not configured"))
             val id = call.parameters["id"]?.toLongOrNull()
                 ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiMessage("Invalid target id"))
+            val resolvedIds = db.incidents.resolveForTarget(id)
             val deleted = db.targets.delete(id)
             if (!deleted) return@delete call.respond(HttpStatusCode.NotFound, ApiMessage("Target $id not found"))
+            historyManager.resolveIncidentsForTarget(id)
             db.monitor.invalidate(id)
-            call.respond(ApiMessage("Target $id deleted"))
+            call.respond(ApiMessage("Target $id deleted (auto-resolved ${resolvedIds.size} open incident(s))"))
         }
 
         post("{id}/probe") {

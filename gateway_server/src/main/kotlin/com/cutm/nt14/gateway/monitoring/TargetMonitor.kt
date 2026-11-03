@@ -178,6 +178,7 @@ class TargetMonitor(
         return TargetStatusDto(
             id = t.id, name = t.name, url = t.url, method = t.method,
             expectedStatus = t.expectedStatus, intervalSec = t.intervalSec, enabled = t.enabled,
+            source = t.source, synthetic = t.synthetic,
             up = last?.up,
             lastStatusCode = last?.statusCode,
             lastLatencyMs = last?.latencyMs,
@@ -192,5 +193,12 @@ class TargetMonitor(
         )
     }
 
-    fun statusAll(): List<TargetStatusDto> = targets.all().map { statusFor(it) }
+    fun statusAll(includeSynthetic: Boolean = false, source: String? = null): List<TargetStatusDto> =
+        targets.all()
+            .filter { t ->
+                val synOk = includeSynthetic || !t.synthetic
+                val srcOk = source.isNullOrBlank() || t.source.equals(source.trim(), ignoreCase = true)
+                synOk && srcOk
+            }
+            .map { statusFor(it) }
 }

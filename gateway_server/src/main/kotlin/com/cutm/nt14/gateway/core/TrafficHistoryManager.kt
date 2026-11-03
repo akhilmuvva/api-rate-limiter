@@ -98,6 +98,26 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         }
     }
 
+    /** Marks an incident as resolved in the in-memory ring buffer. */
+    fun resolveIncident(id: String, resolvedAt: Long = System.currentTimeMillis()): IncidentDto? {
+        val current = incidentsList.toList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx < 0) return null
+        val updated = current[idx].copy(resolvedAt = current[idx].resolvedAt ?: resolvedAt)
+        val newList = current.toMutableList().also { it[idx] = updated }
+        incidentsList.clear()
+        incidentsList.addAll(newList)
+        return updated
+    }
+
+    fun resolveIncidentsForTarget(targetId: Long, resolvedAt: Long = System.currentTimeMillis()) {
+        val updated = incidentsList.map { inc ->
+            if (inc.targetId == targetId && inc.resolvedAt == null) inc.copy(resolvedAt = resolvedAt) else inc
+        }
+        incidentsList.clear()
+        incidentsList.addAll(updated)
+    }
+
     @Volatile private var baselineRps: Double = 5.0
     @Volatile private var lastAnomalyCheckTime: Long = 0L
 

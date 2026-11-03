@@ -343,7 +343,9 @@ data class MonitoredTarget(
     val expectedStatus: Int = 200,
     val intervalSec: Int = 30,
     val timeoutMs: Int = 10_000,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val source: String = "real",
+    val synthetic: Boolean = false
 )
 
 @Serializable
@@ -354,7 +356,9 @@ data class TargetRequest(
     val expectedStatus: Int = 200,
     val intervalSec: Int = 30,
     val timeoutMs: Int = 10_000,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val source: String = "real",
+    val synthetic: Boolean = false
 )
 
 @Serializable
@@ -366,6 +370,8 @@ data class TargetStatusDto(
     val expectedStatus: Int,
     val intervalSec: Int,
     val enabled: Boolean,
+    val source: String = "real",
+    val synthetic: Boolean = false,
     val up: Boolean? = null,               // null = not probed yet
     val lastStatusCode: Int? = null,
     val lastLatencyMs: Long? = null,
