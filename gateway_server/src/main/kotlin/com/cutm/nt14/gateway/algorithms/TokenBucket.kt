@@ -1,8 +1,5 @@
 package com.cutm.nt14.gateway.algorithms
 
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-
 data class TokenBucketResult(
     val allowed: Boolean,
     val remainingTokens: Double,
@@ -10,7 +7,7 @@ data class TokenBucketResult(
 )
 
 /**
- * Thread-safe Token Bucket rate limiter using Kotlin Mutex.
+ * Thread-safe Token Bucket rate limiter.
  *
  * Governs request bursts up to a maximum bucket capacity and continuously
  * refills tokens at a constant rate derived from limitPerMinute.
@@ -26,7 +23,6 @@ class TokenBucket(
 
     private var tokens: Double = capacity
     private var lastRefillNanos: Long = System.nanoTime()
-    private val mutex = Mutex()
 
     private fun refillUnlocked(nowNanos: Long) {
         val elapsedSec = (nowNanos - lastRefillNanos) / 1_000_000_000.0
@@ -37,11 +33,12 @@ class TokenBucket(
         }
     }
 
-    suspend fun allow(tokensNeeded: Double = 1.0): TokenBucketResult = mutex.withLock {
+    @Synchronized
+    fun allow(tokensNeeded: Double = 1.0): TokenBucketResult {
         val now = System.nanoTime()
         refillUnlocked(now)
 
-        if (tokens >= tokensNeeded) {
+        return if (tokens >= tokensNeeded) {
             tokens = (tokens - tokensNeeded).coerceAtMost(capacity)
             TokenBucketResult(
                 allowed = true,
@@ -59,13 +56,15 @@ class TokenBucket(
         }
     }
 
-    suspend fun peek(): Pair<Double, Double> = mutex.withLock {
+    @Synchronized
+    fun peek(): Pair<Double, Double> {
         val now = System.nanoTime()
         refillUnlocked(now)
-        tokens to capacity
+        return tokens to capacity
     }
 
-    suspend fun refund(tokensToRefund: Double = 1.0) = mutex.withLock {
+    @Synchronized
+    fun refund(tokensToRefund: Double = 1.0) {
         val now = System.nanoTime()
         refillUnlocked(now)
         tokens = (tokens + tokensToRefund).coerceAtMost(capacity)

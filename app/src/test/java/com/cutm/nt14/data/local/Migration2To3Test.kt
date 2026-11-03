@@ -165,7 +165,7 @@ class Migration2To3Test {
         override fun endTransaction() = throw UnsupportedOperationException()
         override fun setTransactionSuccessful() = throw UnsupportedOperationException()
         override fun inTransaction(): Boolean = false
-        override fun isDbLockedByCurrentThread(): Boolean = false
+        override val isDbLockedByCurrentThread: Boolean = false
         override fun yieldIfContendedSafely(): Boolean = false
         override fun yieldIfContendedSafely(sleepAfterYieldDelayMillis: Long): Boolean = false
         override var version: Int = 2

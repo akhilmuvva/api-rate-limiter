@@ -1,86 +1,108 @@
 # NT14 API Rate Limiter & Optimizer Platform
 
 A complete, end-to-end API rate limiting, durable PostgreSQL telemetry, and synthetic API monitoring platform comprising:
-1. **Kotlin/Ktor Gateway Backend (`:gateway_server`)**: Production-grade rate limiter implementing Token Bucket + Sliding Window algorithms, HikariCP + Flyway PostgreSQL persistence, bounded asynchronous batch logging, synthetic upstream probing (`TargetMonitor`), and RBAC-protected REST + WebSocket APIs.
-2. **Android Jetpack Compose Client (`:app`)**: Live Dashboard, Upstream Monitoring tab with latency sparklines, keyset-paginated Logs (`real` vs `demo` filtering), aggregated Reports, dynamic rate-limit rules, and client ban management.
+1. **Kotlin/Ktor Gateway Backend (`:gateway_server`)**: Production-grade rate limiter implementing Token Bucket + Sliding Window algorithms, HikariCP + Flyway PostgreSQL persistence, bounded asynchronous batch logging, pooled HTTP/2 upstream proxy client, synthetic upstream probing (`TargetMonitor`), and RBAC-protected REST + WebSocket APIs.
+2. **Android Jetpack Compose Client (`:app`)**: Live Dashboard, Upstream Monitoring tab with latency sparklines, keyset-paginated Logs (`real` vs `demo` filtering), aggregated Reports, merged `Rules` tab (Endpoints + Rate Limits), and masked client ban management (`iphash:<hmac>`).
 
 ---
 
-## Durable PostgreSQL Schema (`V1__init.sql`)
+## Durable PostgreSQL Schema (`V1__init.sql` – `V3__latency_observability.sql`)
 
-Migrations run automatically on startup via Flyway (`gateway_server/src/main/resources/db/migration/V1__init.sql`) whenever `DATABASE_URL` is set:
+Migrations run automatically on startup via Flyway (`gateway_server/src/main/resources/db/migration/`) whenever `DATABASE_URL` is set:
 
 | Table | Primary Key | Purpose & Retention |
 |---|---|---|
-| `request_logs` | `id BIGINT` (`ms << 16 \| seq`) | Every proxied/demo decision (`ts`, `client_id` masked, `client_ip_hash` HMAC-SHA256, `method`, `path`, `status`, `latency_ms`, `decision`, `source` `real\|demo`, `upstream`). **Retention: 7 days**. |
-| `metrics_1m` | `(minute, endpoint, source)` | Per-minute rollups (`requests`, `allowed`, `throttled`, `errors`, `p50`, `p95`, `latency_sum_ms`). **Retention: 90 days**. |
-| `clients` | `id TEXT` | Per-client lifetime counters (`label`, `source`, `first_seen`, `last_seen`, `total_requests`, `throttled_count`). |
-| `bans` | `client_key TEXT` | Active IP/client bans (`reason`, `created_at`, `expires_at`, `created_by`), restored on gateway startup. |
+| `request_logs` | `id BIGINT` (`ms << 16 \| seq`) | Every proxied/demo decision (`ts`, `client_id` masked, `client_ip_hash` HMAC-SHA256, `method`, `path`, `status`, `latency_ms`, `limiter_ms`, `upstream_ms` null on 429, `total_ms`, `decision`, `source` `real\|demo`, `upstream`). **Retention: 7 days**. |
+| `metrics_1m` | `(minute, endpoint, source)` | Per-minute rollups (`requests`, `allowed`, `throttled`, `errors` [5xx only], `p50`, `p95`, `latency_sum_ms`, `limiter_p50`, `limiter_p95`, `upstream_p50`, `upstream_p95`, `total_p50`, `total_p95`). **Retention: 90 days**. |
+| `clients` | `id TEXT` | Per-client lifetime counters (`label` masked IP or user email, `source`, `first_seen`, `last_seen`, `total_requests`, `throttled_count`). |
+| `bans` | `client_key TEXT` | Active IP/client bans (`iphash:<hmac>` or `user:<email>`, `reason`, `created_at`, `expires_at`, `created_by`), restored on gateway startup. |
 | `rules` | `endpoint_id TEXT` | Dynamic rate-limit rules (`limit_per_min`, `burst_limit`, `action`, `updated_at`), restored on startup. |
-| `incidents` | `id TEXT` | Security & target-down incidents (`ts`, `type`, `severity`, `detail`, `target_id`, `resolved_at`). |
-| `monitored_targets` | `id BIGSERIAL` | Synthetic probe targets (`name`, `url`, `method`, `expected_status`, `interval_sec`, `timeout_ms`, `enabled`). Seeded with `https://polylance-fv-1-45wy.onrender.com/health` and `https://polylance-fv-1-45wy.onrender.com/api/jobs`. |
+| `incidents` | `id TEXT` | Security & target-down incidents (`ts`, `type`, `severity`, `detail`, `target_id` `ON DELETE SET NULL`, `resolved_at`). Auto-resolved when a target recovers or is deleted, or via `PATCH /api/incidents/{id}/resolve`. |
+| `monitored_targets` | `id BIGSERIAL` | Synthetic probe targets (`name`, `url`, `method`, `expected_status`, `interval_sec`, `timeout_ms`, `enabled`, `source`, `synthetic`). Seeded with `https://polylance-fv-1-45wy.onrender.com/health` and `https://polylance-fv-1-45wy.onrender.com/api/jobs`. Synthetic test targets (`synthetic = true`) are hidden from `GET /api/targets/status` by default unless `?includeSynthetic=true`. |
 | `probe_results` | `id BIGSERIAL` | Probe outcomes (`target_id`, `ts`, `up`, `status_code`, `latency_ms`, `error`, `transition` `up->down\|down->up`). **Retention: 30 days**. |
 
 ### Asynchronous Batch Writer & Privacy
-- **Bounded Queue (`RequestLogWriter`)**: The request hot path only calls non-blocking `ArrayBlockingQueue.offer` (capacity `10,000`). A background coroutine flushes up to `1,000` entries every `1 s` using `reWriteBatchedInserts=true`. If the queue ever fills, entries are dropped and counted (`PersistenceStatus.dropped`) so the request hot path never blocks.
-- **IP Privacy**: Raw client IPs are never stored in `request_logs` or `clients`. `client_id` stores either `user:<email>` or a masked IP (`ip:203.0.113.x`), and `client_ip_hash` stores `HMAC-SHA256(ip, IP_HASH_SALT)` for correlation and filtering.
+- **Bounded Queue (`RequestLogWriter`)**: The request hot path only calls non-blocking `ArrayBlockingQueue.offer` (capacity `10,000`). A background coroutine coalesces bursts and flushes up to `1,000` entries per JDBC batch using `reWriteBatchedInserts=true`. If the queue ever fills, entries are dropped and counted (`PersistenceStatus.dropped`) so the request hot path never blocks.
+- **IP Privacy (`IpPrivacy`)**: Raw client IPs are never stored in `request_logs` or `clients`, nor logged. `client_id` stores either `user:<email>` or a masked IP (`ip:203.0.113.x`), and `client_ip_hash` stores `HMAC-SHA256(ip, IP_HASH_SALT)` (`iphash:<24-hex>`) for correlation and banning. `IP_HASH_SALT` is required on startup with no default fallback in code.
 
 ---
 
-## Render Dashboard Configuration (No Render API Key Required)
+## Environment Variables (`:gateway_server`)
 
-1. **Create / Attach PostgreSQL on Render**:
-   - In the [Render Dashboard](https://dashboard.render.com/), click **New +** &rarr; **PostgreSQL** (e.g., `nt14-gateway-db`, Free or Starter plan in the same region as your gateway).
-   - Once created, copy the **Internal Database URL** (for the Render web service) and the **External Database URL** (if querying from your laptop).
-2. **Set Environment Variables on the Gateway Web Service**:
-   - Open your gateway service (`api-rate-limiter-gateway-n0ab`) &rarr; **Environment** tab &rarr; set:
-     - `DATABASE_URL` = `<Internal Database URL from step 1>`
-     - `DEMO_TRAFFIC` = `false`
-     - `JWT_SECRET` = `<your 32+ character secret>`
-     - `IP_HASH_SALT` = `<your random salt string>`
-     - `ADMIN_EMAILS` = `akpolylance@gmail.com`
-     - `GOOGLE_CLIENT_ID` = `589442578334-c07uh623kie143m2blh3i9an6u52i5si.apps.googleusercontent.com`
-     - `TRUSTED_PROXIES` = `127.0.0.1,::1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`
-   - Click **Save, Rebuild, and Deploy**. Flyway automatically runs `V1__init.sql` on boot.
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | Production | PostgreSQL connection URL (`postgres://user:pass@host:5432/db` or `jdbc:postgresql://...`). Automatically adds `sslmode=require` for `*.render.com` hosts. |
+| `IP_HASH_SALT` | **Yes (Fail-Fast)** | Secret salt for `HMAC-SHA256` client IP hashing. Read directly from env with **no default fallback**; gateway fails fast on startup if missing or blank. |
+| `DEMO_TRAFFIC` | Optional (`false`) | Enables synthetic background traffic generator when `true`. Keep `false` in production so real metrics are unpolluted. |
+| `JWT_SECRET` | Yes | Signing secret for `VIEWER` / `ADMIN` JWTs and WebSocket pairing tickets. |
+| `ADMIN_EMAILS` | Optional | Comma-separated emails granted `ADMIN` role on Google Sign-In (`akpolylance@gmail.com`). |
+| `GOOGLE_CLIENT_ID` | Yes | OAuth 2.0 Web Client ID used to verify Google ID tokens on `POST /api/auth/google`. |
+| `POLYLANCE_BASE_URL` | Optional | Upstream base URL (defaults to `https://polylance-fv-1-45wy.onrender.com`). |
+| `TRUSTED_PROXIES` | Optional | Comma-separated proxy IPs/CIDRs allowed to supply `X-Forwarded-For`. |
 
 ---
 
 ## How to View & Verify Data
 
-### 1. Inspect Database Row Counts (`SELECT count(*)`)
-Using the built-in Gradle SQL runner (no `psql` binary required):
+### 1. Inspect Database via `dbQuery` or `psql`
+Using the built-in Gradle SQL runner (no `psql` install required):
 ```powershell
 $env:JAVA_HOME = "d:\Android\.jdk17"
 $env:DATABASE_URL = "postgres://user:pass@host:5432/db"
 .\gradlew.bat :gateway_server:dbQuery
 ```
-Or run a custom query:
+Or run a custom SQL query:
 ```powershell
-.\gradlew.bat :gateway_server:dbQuery -Psql="SELECT id, ts, client_id, client_ip_hash, path, status, latency_ms, source, upstream FROM request_logs ORDER BY id DESC LIMIT 10"
+.\gradlew.bat :gateway_server:dbQuery -Psql="SELECT id, ts, client_id, client_ip_hash, path, status, limiter_ms, upstream_ms, total_ms, decision, source FROM request_logs ORDER BY id DESC LIMIT 10"
+```
+Or using `psql` directly with the Render External Database URL:
+```bash
+psql "postgres://user:pass@dpg-xxxx.oregon-postgres.render.com/nt14_gateway?sslmode=require" \
+  -c "SELECT id, ts, status, limiter_ms, upstream_ms, total_ms, decision FROM request_logs ORDER BY id DESC LIMIT 10;"
 ```
 
 ### 2. Query REST Endpoints
 ```powershell
-# 1. Keyset-paginated logs (filterable by source=real|demo, status=200|429|5xx, client, from, to)
+# 1. Lightweight health check (no DB query, ideal for external 5-minute pingers)
+curl.exe -s "https://api-rate-limiter-gateway-qgfy.onrender.com/health-light"
+
+# 2. Full health & persistence status (includes errorRate, throttleRate, limiter/upstream/total percentiles)
+curl.exe -s "https://api-rate-limiter-gateway-qgfy.onrender.com/health"
+
+# 3. Keyset-paginated logs (filterable by source=real|demo, status=200|429|5xx, client, from, to)
 curl.exe -s -H "Authorization: Bearer $TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/logs?limit=20&source=real"
 
-# 2. Time-series rollups from metrics_1m (range=1h|24h|7d)
+# 4. Time-series rollups from metrics_1m (range=1h|24h|7d)
 curl.exe -s -H "Authorization: Bearer $TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/metrics?range=1h&source=real"
 
-# 3. Aggregated traffic report from PostgreSQL
+# 5. Aggregated traffic report from PostgreSQL
 curl.exe -s -H "Authorization: Bearer $TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/reports?range=24h&source=real"
 
-# 4. Monitored upstream targets & latency sparklines
+# 6. Monitored upstream targets & latency sparklines (excludes synthetic test targets by default)
 curl.exe -s -H "Authorization: Bearer $TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/targets/status"
 
-# 5. Admin CSV export
-curl.exe -s -H "Authorization: Bearer $ADMIN_TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/export?format=csv&source=real" -o logs.csv
+# 7. Resolve an incident (ADMIN)
+curl.exe -s -X PATCH -H "Authorization: Bearer $ADMIN_TOKEN" "https://api-rate-limiter-gateway-qgfy.onrender.com/api/incidents/inc_12345678/resolve"
 ```
 
-### 3. Run Automated Persistence & Monitoring Tests
+### 3. Run Automated Unit & Integration Tests
 ```powershell
 $env:JAVA_HOME = "d:\Android\.jdk17"
 .\gradlew.bat :gateway_server:test :app:testDebugUnitTest
 ```
+
+---
+
+## Free-Tier Caveats (Render Web Service & PostgreSQL)
+
+1. **Cold Starts (~30–60s spin-up & initial JIT/TLS warmup)**:
+   - Render Free Web Services spin down after **15 minutes of inbound inactivity**. The first request after idle waits for container boot (~30–50s), and the first upstream call establishes the pooled HTTP/2 TLS session.
+   - Both the gateway (`https://api-rate-limiter-gateway-qgfy.onrender.com`) and the upstream (`https://polylance-fv-1-45wy.onrender.com`) run on Render Free tier; once warm, pooled HTTP/2 keep-alive connections reduce `upstream_ms` to ~35–75 ms and `limiter_ms` to `< 1 ms`.
+2. **External Pinger Setup (`/health-light` every 5 minutes)**:
+   - Use `GET https://api-rate-limiter-gateway-qgfy.onrender.com/health-light` for external uptime monitors (**UptimeRobot** or **cron-job.org**) on a **5-minute interval**.
+   - `/health-light` returns `{"status":"UP","uptimeMs":"..."}` without touching PostgreSQL, keeping the gateway container warm without generating database query load.
+3. **Render Free PostgreSQL 90-Day Expiry**:
+   - Render Free PostgreSQL instances (`nt14-gateway-db`) expire **90 days after creation** (after which data is deleted unless upgraded to a paid plan or exported/recreated via Blueprint).
+   - Check the expiration date in the [Render Dashboard](https://dashboard.render.com/) under `nt14-gateway-db` and export data via `/api/export?format=csv` or `pg_dump` before expiry.
 
 See [`gateway_server/README.md`](gateway_server/README.md) for full endpoint specifications and architecture details.

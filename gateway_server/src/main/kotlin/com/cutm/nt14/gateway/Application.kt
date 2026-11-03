@@ -66,6 +66,9 @@ fun Application.module(
     customUpstream: PolyLanceUpstream? = null,
     customJwtService: JwtService? = null
 ) {
+    // Fail fast on startup if IP_HASH_SALT is not configured in environment
+    com.cutm.nt14.gateway.db.IpPrivacy.ensureConfigured()
+
     val rateLimiter = RateLimiter()
     val webSocketManager = WebSocketManager()
     val historyManager = TrafficHistoryManager()
@@ -334,6 +337,15 @@ fun Application.module(
                     metrics = historyManager.calculateCurrentMetrics(),
                     persistence = persistence?.status() ?: PersistenceStatus(mode = "memory"),
                     demoTraffic = isDemoTrafficEnabled
+                )
+            )
+        }
+
+        get("/health-light") {
+            call.respond(
+                mapOf(
+                    "status" to "UP",
+                    "uptimeMs" to (System.currentTimeMillis() - serverStartTime).toString()
                 )
             )
         }

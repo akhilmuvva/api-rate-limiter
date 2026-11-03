@@ -1,7 +1,5 @@
 package com.cutm.nt14.gateway.algorithms
 
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.collections.ArrayDeque
 
 data class SlidingWindowResult(
@@ -11,7 +9,7 @@ data class SlidingWindowResult(
 )
 
 /**
- * Thread-safe Sliding Window counter rate limiter using Kotlin Mutex.
+ * Thread-safe Sliding Window counter rate limiter.
  *
  * Smooths out boundary spikes by recording timestamps of requests
  * within a rolling time window (default 60 seconds).
@@ -26,7 +24,6 @@ class SlidingWindow(
     }
 
     private val timestamps = ArrayDeque<Long>()
-    private val mutex = Mutex()
 
     private fun evictExpired(nowMillis: Long) {
         val boundary = nowMillis - windowMillis
@@ -35,11 +32,12 @@ class SlidingWindow(
         }
     }
 
-    suspend fun allow(): SlidingWindowResult = mutex.withLock {
+    @Synchronized
+    fun allow(): SlidingWindowResult {
         val now = System.currentTimeMillis()
         evictExpired(now)
 
-        if (timestamps.size < limit) {
+        return if (timestamps.size < limit) {
             timestamps.addLast(now)
             val remaining = limit - timestamps.size
             val resetSec = if (timestamps.isNotEmpty()) {
@@ -63,7 +61,8 @@ class SlidingWindow(
         }
     }
 
-    suspend fun peek(): Triple<Int, Int, Double> = mutex.withLock {
+    @Synchronized
+    fun peek(): Triple<Int, Int, Double> {
         val now = System.currentTimeMillis()
         evictExpired(now)
         val current = timestamps.size
@@ -72,6 +71,6 @@ class SlidingWindow(
         } else {
             windowMillis / 1000.0
         }
-        Triple(current, limit, resetSec)
+        return Triple(current, limit, resetSec)
     }
 }

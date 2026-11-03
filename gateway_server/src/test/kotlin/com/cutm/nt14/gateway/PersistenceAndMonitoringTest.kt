@@ -540,4 +540,237 @@ class PersistenceAndMonitoringTest {
             upstreamServer.stop(0)
         }
     }
+
+    @Test
+    fun testThrottleVsErrorMetricSeparationAndLatencyBreakdown() {
+        val adminToken = jwtService.sign("admin_1", "akpolylance@gmail.com", "ADMIN")
+        val upstreamStatus = AtomicInteger(200)
+        val upstreamServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        upstreamServer.createContext("/api/jobs") { ex ->
+            val code = upstreamStatus.get()
+            val body = """{"jobs":[]}""".toByteArray()
+            ex.sendResponseHeaders(code, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        upstreamServer.start()
+
+        try {
+            val testUpstream = PolyLanceUpstream("http://127.0.0.1:${upstreamServer.address.port}")
+            testApplication {
+                application {
+                    module(customDatabase = db, startBackgroundMonitor = false, customUpstream = testUpstream, customJwtService = jwtService)
+                }
+
+                // Send 5 allowed (200) + 5 throttled (429) requests from client 198.51.100.50 (burstLimit=5 on /api/polylance/escrows)
+                repeat(10) { i ->
+                    val r = client.get("/api/polylance/escrows") {
+                        header("X-Forwarded-For", "198.51.100.50")
+                    }
+                    if (i < 5) {
+                        assertEquals(HttpStatusCode.OK, r.status)
+                        assertNotNull(r.headers["X-Limiter-Ms"])
+                        assertNotNull(r.headers["X-Upstream-Ms"])
+                        assertNotNull(r.headers["X-Total-Ms"])
+                    } else {
+                        assertEquals(HttpStatusCode.TooManyRequests, r.status)
+                        assertNotNull(r.headers["X-Limiter-Ms"])
+                        assertNull(r.headers["X-Upstream-Ms"])
+                        assertNotNull(r.headers["X-Total-Ms"])
+                    }
+                }
+
+                // Verify /health separates errorRate (0.0, since zero 5xx occurred) from throttleRate (0.5 = 50%)
+                val healthAfter429 = json.decodeFromString<HealthResponse>(client.get("/health").bodyAsText())
+                val m1 = healthAfter429.metrics!!
+                assertEquals(5L, m1.allowed)
+                assertEquals(5L, m1.throttled)
+                assertEquals(0L, m1.serverErrors)
+                assertEquals(0.0, m1.errorRate, 0.001)
+                assertEquals(0.5, m1.throttleRate, 0.001)
+
+                // Now trigger 2 upstream 502 Bad Gateway responses from a second client
+                upstreamStatus.set(502)
+                repeat(2) {
+                    val r = client.get("/api/polylance/escrows") {
+                        header("X-Forwarded-For", "198.51.100.51")
+                    }
+                    assertEquals(HttpStatusCode.BadGateway, r.status)
+                }
+
+                val healthAfter502 = json.decodeFromString<HealthResponse>(client.get("/health").bodyAsText())
+                val m2 = healthAfter502.metrics!!
+                assertEquals(7L, m2.allowed)
+                assertEquals(5L, m2.throttled)
+                assertEquals(2L, m2.serverErrors)
+                assertTrue("errorRate must reflect 5xx server failures (> 0)", m2.errorRate > 0.0)
+                assertTrue("throttleRate must remain separate from errorRate", m2.throttleRate > m2.errorRate)
+
+                // Verify /api/logs exposes limiterMs, upstreamMs (null on 429, non-null on 200), and totalMs
+                val logsPage = json.decodeFromString<LogsPage>(
+                    client.get("/api/logs?limit=20&source=real") {
+                        header(HttpHeaders.Authorization, "Bearer $adminToken")
+                    }.bodyAsText()
+                )
+                assertEquals(12, logsPage.items.size)
+                val allowedLogs = logsPage.items.filter { it.status == 200 }
+                val throttledLogs = logsPage.items.filter { it.status == 429 }
+                assertEquals(5, allowedLogs.size)
+                assertEquals(5, throttledLogs.size)
+                assertTrue(allowedLogs.all { it.limiterMs != null && it.upstreamMs != null && it.totalMs != null })
+                assertTrue(throttledLogs.all { it.limiterMs != null && it.upstreamMs == null && it.totalMs != null })
+
+                // Verify /api/reports exposes throttleRate vs errorRate and latency percentiles
+                val report = json.decodeFromString<TrafficReportDto>(
+                    client.get("/api/reports?range=1h&source=real") {
+                        header(HttpHeaders.Authorization, "Bearer $adminToken")
+                    }.bodyAsText()
+                )
+                assertEquals(12L, report.totalRequests)
+                assertEquals(5L, report.blockedRequests)
+                assertEquals(2L, report.serverErrors)
+                assertTrue(report.throttleRate > report.errorRate)
+            }
+        } finally {
+            upstreamServer.stop(0)
+        }
+    }
+
+    @Test
+    fun testIncidentResolveEndpointSyntheticTargetFilterAndAutoResolveOnDelete() = testApplication {
+        val adminToken = jwtService.sign("admin_1", "akpolylance@gmail.com", "ADMIN")
+        val viewerToken = jwtService.sign("viewer_1", "viewer@cutm.nt14.com", "VIEWER")
+
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/fail") { ex ->
+            val bytes = """{"error":"down"}""".toByteArray()
+            ex.sendResponseHeaders(503, bytes.size.toLong())
+            ex.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+
+        try {
+            application {
+                module(customDatabase = db, startBackgroundMonitor = false, customJwtService = jwtService)
+            }
+
+            // 1. Create a synthetic failing target
+            val createResp = client.post("/api/targets") {
+                header(HttpHeaders.Authorization, "Bearer $adminToken")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    json.encodeToString(
+                        TargetRequest(
+                            name = "Synthetic Probe Test",
+                            url = "http://127.0.0.1:${server.address.port}/fail",
+                            intervalSec = 30,
+                            source = "test",
+                            synthetic = true
+                        )
+                    )
+                )
+            }
+            assertEquals(HttpStatusCode.Created, createResp.status)
+            val created = json.decodeFromString<MonitoredTarget>(createResp.bodyAsText())
+            assertTrue(created.synthetic)
+            assertEquals("test", created.source)
+
+            // 2. Verify synthetic target is excluded from GET /api/targets/status by default, and included when includeSynthetic=true
+            val defaultTargets = json.decodeFromString<List<TargetStatusDto>>(
+                client.get("/api/targets/status") { header(HttpHeaders.Authorization, "Bearer $viewerToken") }.bodyAsText()
+            )
+            assertTrue("Synthetic target must be excluded by default", defaultTargets.none { it.id == created.id })
+
+            val allTargets = json.decodeFromString<List<TargetStatusDto>>(
+                client.get("/api/targets/status?includeSynthetic=true") { header(HttpHeaders.Authorization, "Bearer $viewerToken") }.bodyAsText()
+            )
+            assertTrue("Synthetic target must be included when includeSynthetic=true", allTargets.any { it.id == created.id })
+
+            // 3. Probe 3 times to trigger a Target Down incident
+            repeat(3) {
+                client.post("/api/targets/${created.id}/probe") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }
+            }
+            val openIncidents = json.decodeFromString<List<IncidentDto>>(
+                client.get("/api/incidents") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }.bodyAsText()
+            ).filter { it.targetId == created.id && it.resolvedAt == null }
+            assertEquals(1, openIncidents.size)
+            val incidentId = openIncidents.first().id
+
+            // 4. Viewer cannot resolve (403), Admin can resolve via PATCH /api/incidents/{id}/resolve
+            val viewerResolve = client.patch("/api/incidents/$incidentId/resolve") {
+                header(HttpHeaders.Authorization, "Bearer $viewerToken")
+            }
+            assertEquals(HttpStatusCode.Forbidden, viewerResolve.status)
+
+            val adminResolve = client.patch("/api/incidents/$incidentId/resolve") {
+                header(HttpHeaders.Authorization, "Bearer $adminToken")
+            }
+            assertEquals(HttpStatusCode.OK, adminResolve.status)
+            val resolvedIncident = json.decodeFromString<IncidentDto>(adminResolve.bodyAsText())
+            assertNotNull(resolvedIncident.resolvedAt)
+
+            // 5. Trigger another open incident on a second target, then DELETE /api/targets/{id} and verify auto-resolution
+            val secondTargetResp = client.post("/api/targets") {
+                header(HttpHeaders.Authorization, "Bearer $adminToken")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    json.encodeToString(
+                        TargetRequest(
+                            name = "Auto-Resolve Delete Test",
+                            url = "http://127.0.0.1:${server.address.port}/fail",
+                            intervalSec = 30,
+                            synthetic = true
+                        )
+                    )
+                )
+            }
+            val secondTarget = json.decodeFromString<MonitoredTarget>(secondTargetResp.bodyAsText())
+            repeat(3) {
+                client.post("/api/targets/${secondTarget.id}/probe") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }
+            }
+            val openBeforeDelete = json.decodeFromString<List<IncidentDto>>(
+                client.get("/api/incidents") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }.bodyAsText()
+            ).filter { it.targetId == secondTarget.id && it.resolvedAt == null }
+            assertEquals(1, openBeforeDelete.size)
+
+            val delResp = client.delete("/api/targets/${secondTarget.id}") {
+                header(HttpHeaders.Authorization, "Bearer $adminToken")
+            }
+            assertEquals(HttpStatusCode.OK, delResp.status)
+
+            val openAfterDelete = json.decodeFromString<List<IncidentDto>>(
+                client.get("/api/incidents") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }.bodyAsText()
+            ).filter { it.resolvedAt == null }
+            assertEquals("Deleting a target must auto-resolve all its open incidents", 0, openAfterDelete.size)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun testIpHashSaltFailsFastWhenMissingAndHealthLightWorks() = testApplication {
+        // 1. Verify IpPrivacy.ensureConfigured fails fast when IP_HASH_SALT is missing or blank
+        val missingError = runCatching { IpPrivacy.ensureConfigured { null } }.exceptionOrNull()
+        assertTrue(missingError is IllegalStateException)
+        val blankError = runCatching { IpPrivacy.ensureConfigured { "   " } }.exceptionOrNull()
+        assertTrue(blankError is IllegalStateException)
+
+        // 2. Verify /health-light returns 200 OK with no DB dependency
+        application {
+            module(customDatabase = null, startBackgroundMonitor = false, customJwtService = jwtService)
+        }
+        val lightResp = client.get("/health-light")
+        assertEquals(HttpStatusCode.OK, lightResp.status)
+        assertTrue(lightResp.bodyAsText().contains("\"status\""))
+        assertTrue(lightResp.bodyAsText().contains("UP"))
+    }
 }

@@ -55,6 +55,7 @@ application {
 
 tasks.test {
     useJUnit()
+    environment("IP_HASH_SALT", System.getenv("IP_HASH_SALT") ?: "nt14-unit-test-ip-hash-salt")
     testLogging {
         events("passed", "failed", "skipped")
         showStandardStreams = true

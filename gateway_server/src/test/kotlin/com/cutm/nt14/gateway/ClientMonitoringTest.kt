@@ -129,16 +129,18 @@ class ClientMonitoringTest {
         val normalBan = rateLimiter.anomalyDetector.checkBan(normalClient)
         assertNull("Normal client must NOT be banned", normalBan)
 
-        // Verify clientTracker tracking
+        // Verify clientTracker tracking (IDs are iphash:<hmac> and maskedId is ip:192.0.2.x; raw IPs are never exposed)
         val clients = clientTracker.getAllClients(isAdmin = true, rateLimiter.anomalyDetector)
-        val trackedAbuser = clients.find { it.id == abusiveClient }
-        val trackedNormal = clients.find { it.id == normalClient }
+        val abuserHashId = "iphash:${com.cutm.nt14.gateway.db.IpPrivacy.hash(abusiveClient)}"
+        val normalHashId = "iphash:${com.cutm.nt14.gateway.db.IpPrivacy.hash(normalClient)}"
+        val trackedAbuser = clients.find { it.id == abuserHashId }
+        val trackedNormal = clients.find { it.id == normalHashId }
 
         assertNotNull(trackedAbuser)
         assertNotNull(trackedNormal)
         assertEquals("banned", trackedAbuser!!.status)
         assertEquals("active", trackedNormal!!.status)
-        assertEquals("192.0.***.***", trackedAbuser.maskedId)
+        assertEquals("ip:192.0.2.x", trackedAbuser.maskedId)
     }
 
     @Test
@@ -198,36 +200,38 @@ class ClientMonitoringTest {
         val viewerToken = createViewerToken()
         val adminToken = createAdminToken()
 
-        // 1. VIEWER receives masked IDs
+        // 1. VIEWER receives hashed IDs and masked labels (raw IPs are never exposed)
         val viewerResp = client.get("/api/clients") {
             header(HttpHeaders.Authorization, "Bearer $viewerToken")
         }
         assertEquals(HttpStatusCode.OK, viewerResp.status)
         val viewerClients = Json.decodeFromString<List<ClientInfo>>(viewerResp.bodyAsText())
-        assertTrue("IP must be masked for viewer", viewerClients.any { it.id == "198.51.***.***" })
-        assertTrue("Email must be masked for viewer", viewerClients.any { it.id.contains("***@cutm.nt14.com") })
+        val expectedHashId = "iphash:${com.cutm.nt14.gateway.db.IpPrivacy.hash("198.51.100.77")}"
+        assertTrue("IP must be hashed/masked for viewer", viewerClients.any { it.id == expectedHashId && it.maskedId == "ip:198.51.100.x" })
+        assertTrue("Email must be masked for viewer", viewerClients.any { it.maskedId.contains("***@cutm.nt14.com") })
 
-        // 2. ADMIN receives real unmasked IDs
+        // 2. ADMIN receives stable iphash IDs and masked IP labels (never raw IPs)
         val adminResp = client.get("/api/clients") {
             header(HttpHeaders.Authorization, "Bearer $adminToken")
         }
         assertEquals(HttpStatusCode.OK, adminResp.status)
         val adminClients = Json.decodeFromString<List<ClientInfo>>(adminResp.bodyAsText())
-        assertTrue("IP must be unmasked for admin", adminClients.any { it.id == "198.51.100.77" })
+        val ipClient = adminClients.first { it.id == expectedHashId }
+        assertEquals("ip:198.51.100.x", ipClient.maskedId)
         assertTrue("Email must be unmasked for admin", adminClients.any { it.id == "user:operator@cutm.nt14.com" })
 
-        // 3. ADMIN manually bans a client
-        val banReq = CreateBanRequest(clientId = "198.51.100.77", durationMinutes = 30, reason = "Manual ban test")
+        // 3. ADMIN manually bans a client from the Clients tab using its masked/hashed ClientInfo.id
+        val banReq = CreateBanRequest(clientId = ipClient.id, durationMinutes = 30, reason = "Manual ban test")
         val banResp = client.post("/api/bans") {
             header(HttpHeaders.Authorization, "Bearer $adminToken")
             contentType(ContentType.Application.Json)
             setBody(Json.encodeToString(banReq))
         }
         assertEquals(HttpStatusCode.Created, banResp.status)
-        assertNotNull(rateLimiter.anomalyDetector.checkBan("198.51.100.77"))
+        assertNotNull("Ban by iphash must block the underlying IP", rateLimiter.anomalyDetector.checkBan("198.51.100.77"))
 
-        // 4. ADMIN lifts the ban
-        val unbanResp = client.delete("/api/bans/198.51.100.77") {
+        // 4. ADMIN lifts the ban using its iphash ID
+        val unbanResp = client.delete("/api/bans/${ipClient.id}") {
             header(HttpHeaders.Authorization, "Bearer $adminToken")
         }
         assertEquals(HttpStatusCode.OK, unbanResp.status)

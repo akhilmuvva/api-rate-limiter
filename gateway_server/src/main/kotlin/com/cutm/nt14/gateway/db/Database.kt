@@ -103,17 +103,21 @@ object LogIdGenerator {
 
 /** IP privacy helpers: masked display values and keyed hashes for correlation. */
 object IpPrivacy {
-    private val logger = LoggerFactory.getLogger(IpPrivacy::class.java)
+    /**
+     * Reads IP_HASH_SALT directly from the environment with NO default fallback in code.
+     * Fails fast on startup if missing or blank.
+     */
+    fun resolveKey(env: (String) -> String? = System::getenv): ByteArray {
+        val salt = env("IP_HASH_SALT")?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("FATAL: IP_HASH_SALT environment variable is required and has no default fallback.")
+        return MessageDigest.getInstance("SHA-256").digest(salt.toByteArray(StandardCharsets.UTF_8))
+    }
 
-    private val key: ByteArray by lazy {
-        val salt = System.getenv("IP_HASH_SALT")?.takeIf { it.isNotBlank() }
-            ?: System.getenv("JWT_SECRET")?.takeIf { it.isNotBlank() }?.let { "ip-hash:$it" }
-        if (salt == null) {
-            logger.warn("IP_HASH_SALT not set: using a per-process random salt (hashes will change on restart)")
-            java.util.UUID.randomUUID().toString().toByteArray()
-        } else {
-            MessageDigest.getInstance("SHA-256").digest(salt.toByteArray(StandardCharsets.UTF_8))
-        }
+    private val key: ByteArray by lazy { resolveKey() }
+
+    /** Validates at startup that IP_HASH_SALT is explicitly configured. */
+    fun ensureConfigured(env: (String) -> String? = System::getenv) {
+        resolveKey(env)
     }
 
     fun hash(ip: String): String {
