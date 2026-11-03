@@ -13,6 +13,16 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
     private val incidentsList = ConcurrentLinkedDeque<IncidentDto>()
     private val totalAllowed = AtomicLong(0)
     private val totalThrottled = AtomicLong(0)
+    private val totalServerErrors = AtomicLong(0)
+
+    /** Restores counters and recent logs from PostgreSQL on startup so /health metrics survive restarts. */
+    fun restoreFromDb(recentOldestFirst: List<RequestLogDto>, allowedCount: Long, throttledCount: Long, serverErrorCount: Long) {
+        totalAllowed.set(allowedCount)
+        totalThrottled.set(throttledCount)
+        totalServerErrors.set(serverErrorCount)
+        logsRingBuffer.clear()
+        recentOldestFirst.takeLast(maxLogs).forEach { logsRingBuffer.addLast(it) }
+    }
 
     /** Durable sinks, set when PostgreSQL persistence is enabled. Must be non-blocking. */
     @Volatile var logSink: ((com.cutm.nt14.gateway.db.LogEntry) -> Unit)? = null
@@ -74,6 +84,9 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             totalThrottled.incrementAndGet()
         } else {
             totalAllowed.incrementAndGet()
+            if (status >= 500) {
+                totalServerErrors.incrementAndGet()
+            }
         }
 
         return log
@@ -220,6 +233,7 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val rps = recentLogs1s.size.toDouble()
         val allowedCount = totalAllowed.get()
         val throttledCount = totalThrottled.get()
+        val serverErrorsCount = totalServerErrors.get()
 
         val sampleLogs = if (recentLogs60s.isNotEmpty()) recentLogs60s else logsRingBuffer.toList()
         val latencies = sampleLogs.map { it.latencyMs }.sorted()
@@ -242,7 +256,9 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val activeClients = recentLogs60s.map { it.clientId }.distinct().size.coerceAtLeast(if (logsRingBuffer.isNotEmpty()) 1 else 0)
 
         val totalWindow = (allowedCount + throttledCount).toDouble()
-        val errorRate = if (totalWindow > 0) (throttledCount.toDouble() / totalWindow) else 0.0
+        // errorRate counts ONLY upstream/gateway server failures (5xx); throttled 429s go in throttleRate
+        val errorRate = if (totalWindow > 0) (serverErrorsCount.toDouble() / totalWindow) else 0.0
+        val throttleRate = if (totalWindow > 0) (throttledCount.toDouble() / totalWindow) else 0.0
 
         val endpointCounts = mutableMapOf<String, Long>()
         for (log in sampleLogs) {
@@ -255,7 +271,9 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             rps = (rps * 10).roundToInt() / 10.0,
             allowed = allowedCount,
             throttled = throttledCount,
+            serverErrors = serverErrorsCount,
             errorRate = (errorRate * 1000).roundToInt() / 1000.0,
+            throttleRate = (throttleRate * 1000).roundToInt() / 1000.0,
             p50LatencyMs = p50,
             p95LatencyMs = p95,
             p50LimiterMs = limP50,
@@ -285,7 +303,8 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val blocked = filtered.count { it.status == 429 || it.decision != "allowed" }.toLong()
         val serverErrors = filtered.count { it.status >= 500 }.toLong()
         val allowed = total - blocked
-        val errorRate = if (total > 0) blocked.toDouble() / total.toDouble() else 0.0
+        val errorRate = if (total > 0) serverErrors.toDouble() / total.toDouble() else 0.0
+        val throttleRate = if (total > 0) blocked.toDouble() / total.toDouble() else 0.0
 
         val latencies = filtered.map { it.latencyMs }.sorted()
         val limLat = filtered.mapNotNull { it.limiterMs }.sorted()
@@ -310,6 +329,7 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             allowedRequests = allowed,
             blockedRequests = blocked,
             errorRate = (errorRate * 1000).roundToInt() / 1000.0,
+            throttleRate = (throttleRate * 1000).roundToInt() / 1000.0,
             avgLatencyMs = avgLatency,
             p50LatencyMs = p50,
             p95LatencyMs = p95,

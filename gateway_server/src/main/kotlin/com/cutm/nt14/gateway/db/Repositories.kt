@@ -128,6 +128,22 @@ class LogRepository(private val db: GatewayDatabase) {
         }
     }
 
+    data class LogSummaryCounts(val allowed: Long, val throttled: Long, val serverErrors: Long)
+
+    fun summaryCounts(): LogSummaryCounts = db.withConnection { c ->
+        c.prepareStatement(
+            """SELECT coalesce(count(*) FILTER (WHERE decision = 'allowed' AND status <> 429), 0),
+                      coalesce(count(*) FILTER (WHERE status = 429 OR decision <> 'allowed'), 0),
+                      coalesce(count(*) FILTER (WHERE status >= 500), 0)
+               FROM request_logs"""
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                rs.next()
+                LogSummaryCounts(rs.getLong(1), rs.getLong(2), rs.getLong(3))
+            }
+        }
+    }
+
     /** Streams matching rows as CSV (oldest first). Returns the number of rows written. */
     fun exportCsv(q: LogQuery, out: Writer, maxRows: Int = 500_000): Int {
         val w = logWhere(q, includeCursor = false)
@@ -267,28 +283,46 @@ class MetricsRepository(private val db: GatewayDatabase) {
                 w.bind(ps)
                 ps.executeQuery().use { rs ->
                     generateSequence {
-                        if (!rs.next()) null else MetricsPointDto(
-                            ts = rs.getTimestamp("bucket").time,
-                            requests = rs.getLong("r"),
-                            allowed = rs.getLong("a"),
-                            throttled = rs.getLong("t"),
-                            errors = rs.getLong("e"),
-                            p50 = rs.getDouble("p50w"),
-                            p95 = rs.getDouble("p95m"),
-                            limiterP50 = rs.getDouble("lp50"),
-                            limiterP95 = rs.getDouble("lp95"),
-                            upstreamP50 = rs.getDouble("up50").takeIf { !rs.wasNull() },
-                            upstreamP95 = rs.getDouble("up95").takeIf { !rs.wasNull() },
-                            totalP50 = rs.getDouble("tp50"),
-                            totalP95 = rs.getDouble("tp95")
-                        )
+                        if (!rs.next()) null else {
+                            val reqs = rs.getLong("r")
+                            val thr = rs.getLong("t")
+                            val err = rs.getLong("e")
+                            MetricsPointDto(
+                                ts = rs.getTimestamp("bucket").time,
+                                requests = reqs,
+                                allowed = rs.getLong("a"),
+                                throttled = thr,
+                                errors = err,
+                                errorRate = if (reqs > 0) Math.round(err * 1000.0 / reqs) / 1000.0 else 0.0,
+                                throttleRate = if (reqs > 0) Math.round(thr * 1000.0 / reqs) / 1000.0 else 0.0,
+                                p50 = rs.getDouble("p50w"),
+                                p95 = rs.getDouble("p95m"),
+                                limiterP50 = rs.getDouble("lp50"),
+                                limiterP95 = rs.getDouble("lp95"),
+                                upstreamP50 = rs.getDouble("up50").takeIf { !rs.wasNull() },
+                                upstreamP95 = rs.getDouble("up95").takeIf { !rs.wasNull() },
+                                totalP50 = rs.getDouble("tp50"),
+                                totalP95 = rs.getDouble("tp95")
+                            )
+                        }
                     }.toList()
                 }
             }
         }
+        val totReqs = points.sumOf { it.requests }
+        val totAllowed = points.sumOf { it.allowed }
+        val totThrottled = points.sumOf { it.throttled }
+        val totErrors = points.sumOf { it.errors }
         return MetricsSeriesDto(
             range = normalizeRange(range), bucketSeconds = bucketSec, source = s ?: "all",
-            points = points, lastRollupAt = lastRollupAt, generatedAt = now
+            points = points,
+            totalRequests = totReqs,
+            totalAllowed = totAllowed,
+            totalThrottled = totThrottled,
+            totalErrors = totErrors,
+            errorRate = if (totReqs > 0) Math.round(totErrors * 1000.0 / totReqs) / 1000.0 else 0.0,
+            throttleRate = if (totReqs > 0) Math.round(totThrottled * 1000.0 / totReqs) / 1000.0 else 0.0,
+            lastRollupAt = lastRollupAt, generatedAt = now
         )
     }
 
@@ -349,7 +383,8 @@ class MetricsRepository(private val db: GatewayDatabase) {
                 totalRequests = total,
                 allowedRequests = allowed,
                 blockedRequests = throttled,
-                errorRate = if (total > 0) Math.round(throttled * 1000.0 / total) / 1000.0 else 0.0,
+                errorRate = if (total > 0) Math.round(errors * 1000.0 / total) / 1000.0 else 0.0,
+                throttleRate = if (total > 0) Math.round(throttled * 1000.0 / total) / 1000.0 else 0.0,
                 avgLatencyMs = if (total > 0) latSum / total else 0L,
                 p50LatencyMs = pct.p50,
                 p95LatencyMs = pct.p95,

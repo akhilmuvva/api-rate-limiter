@@ -82,7 +82,9 @@ data class GatewayMetrics(
     val rps: Double = 0.0,
     val allowed: Long = 0,
     val throttled: Long = 0,
+    val serverErrors: Long = 0,
     val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long = 0,
     val p50LimiterMs: Long = 0,
@@ -139,6 +141,7 @@ data class TrafficReportDto(
     val allowedRequests: Long,
     val blockedRequests: Long,
     val errorRate: Double,
+    val throttleRate: Double = 0.0,
     val avgLatencyMs: Long,
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long,
@@ -336,6 +339,8 @@ data class MetricsPointDto(
     val allowed: Long,
     val throttled: Long,
     val errors: Long,
+    val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val p50: Double,   // request-weighted mean of per-minute p50
     val p95: Double,   // max of per-minute p95 within the bucket (upper bound)
     val limiterP50: Double = 0.0,
@@ -352,6 +357,12 @@ data class MetricsSeriesDto(
     val bucketSeconds: Int,
     val source: String,
     val points: List<MetricsPointDto>,
+    val totalRequests: Long = 0,
+    val totalAllowed: Long = 0,
+    val totalThrottled: Long = 0,
+    val totalErrors: Long = 0,
+    val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val lastRollupAt: Long,
     val generatedAt: Long
 )

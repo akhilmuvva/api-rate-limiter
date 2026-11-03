@@ -57,6 +57,13 @@ class Persistence(
         incidents.recent(50).reversed().forEach { history.pushIncident(it) }
         history.incidentSink = { inc -> runCatching { incidents.insert(inc) } }
 
+        // Restore historical request counts and recent logs into memory so /health metrics survive restarts.
+        runCatching {
+            val counts = logs.summaryCounts()
+            val recentLogs = logs.page(LogQuery(limit = 200)).items.reversed()
+            history.restoreFromDb(recentLogs, counts.allowed, counts.throttled, counts.serverErrors)
+        }.onFailure { logger.warn("Failed to restore history metrics from DB: ${it.message}") }
+
         // Request logs: non-blocking enqueue on the hot path.
         history.logSink = { entry -> writer.offer(entry) }
 

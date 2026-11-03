@@ -42,7 +42,7 @@ class RequestLogWriter(
     private val db: GatewayDatabase,
     val capacity: Int = 10_000,
     private val batchSize: Int = 1_000,
-    private val flushIntervalMs: Long = 1_000L
+    private val flushIntervalMs: Long = 2_000L
 ) {
     private val logger = LoggerFactory.getLogger(RequestLogWriter::class.java)
     private val queue = ArrayBlockingQueue<LogEntry>(capacity)
@@ -68,7 +68,14 @@ class RequestLogWriter(
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(flushIntervalMs)
-                runCatching { flushNow() }.onFailure { logger.warn("request_logs flush failed: ${it.message}") }
+                if (queue.isNotEmpty()) {
+                    // Coalesce active bursts arriving across a tick boundary into a single batch
+                    val firstSize = queue.size
+                    if (firstSize < 30) {
+                        delay(400L)
+                    }
+                    runCatching { flushNow() }.onFailure { logger.warn("request_logs flush failed: ${it.message}") }
+                }
             }
         }
     }
