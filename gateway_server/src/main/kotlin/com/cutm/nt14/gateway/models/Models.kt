@@ -421,6 +421,23 @@ data class TargetStatusDto(
 )
 
 @Serializable
+data class FlywayRowDto(
+    val rank: Int,
+    val version: String?,
+    val description: String?,
+    val script: String?,
+    val checksum: Int?,
+    val success: Boolean
+)
+
+@Serializable
+data class DbInspectResponse(
+    val counts: Map<String, Long>,
+    val flywaySchemaHistory: List<FlywayRowDto>,
+    val defaultProbeTimeoutMs: Int
+)
+
+@Serializable
 data class PersistenceStatus(
     val mode: String,                // "postgres" | "memory"
     val queued: Int = 0,

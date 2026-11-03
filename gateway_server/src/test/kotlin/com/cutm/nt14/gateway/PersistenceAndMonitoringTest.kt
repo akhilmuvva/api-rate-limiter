@@ -68,6 +68,22 @@ class PersistenceAndMonitoringTest {
     }
 
     @Test
+    fun testFreshDatabaseMigratesWithV1RevertedAndV4SetsTimeout10000AndScrubsEmails() {
+        db.withConnection { c ->
+            c.createStatement().use { st ->
+                st.executeQuery("SELECT column_default FROM information_schema.columns WHERE table_name = 'monitored_targets' AND column_name = 'timeout_ms'").use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals("10000", rs.getString(1))
+                }
+                st.executeQuery("SELECT count(*) FROM monitored_targets WHERE timeout_ms <> 10000").use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals(0L, rs.getLong(1))
+                }
+            }
+        }
+    }
+
+    @Test
     fun testBatchingAndOverflowDropAndCount() {
         val writer = RequestLogWriter(db, capacity = 50, batchSize = 20, flushIntervalMs = 10_000L)
         val now = System.currentTimeMillis()

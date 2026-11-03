@@ -99,5 +99,5 @@ CREATE INDEX idx_probe_results_target_ts ON probe_results (target_id, ts DESC);
 
 -- First real targets: the PolyLance backend health route and the escrows (jobs) route the gateway proxies.
 INSERT INTO monitored_targets (name, url, method, expected_status, interval_sec, timeout_ms) VALUES
-    ('PolyLance health',  'https://polylance-fv-1-45wy.onrender.com/health',   'GET', 200, 30, 10000),
-    ('PolyLance escrows', 'https://polylance-fv-1-45wy.onrender.com/api/jobs', 'GET', 200, 30, 10000);
+    ('PolyLance health',  'https://polylance-fv-1-45wy.onrender.com/health',   'GET', 200, 30, 30000),
+    ('PolyLance escrows', 'https://polylance-fv-1-45wy.onrender.com/api/jobs', 'GET', 200, 30, 30000);

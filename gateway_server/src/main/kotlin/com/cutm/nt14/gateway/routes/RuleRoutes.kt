@@ -59,6 +59,47 @@ fun Route.ruleRoutes(
         )
     }
 
+    // GET /api/admin/db-inspect -> flyway checksums & privacy counts (ADMIN only)
+    get("/api/admin/db-inspect") {
+        if (!call.requireAdmin(jwtService)) return@get
+        val db = persistence?.db ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, ApiMessage("Database persistence not configured"))
+        val result = db.withConnection { conn ->
+            val counts = mutableMapOf<String, Long>()
+            conn.createStatement().use { st ->
+                st.executeQuery("SELECT count(*) FROM request_logs WHERE client_id LIKE '%@%'").use { rs -> rs.next(); counts["request_logs_with_at"] = rs.getLong(1) }
+                st.executeQuery("SELECT count(*) FROM bans WHERE client_key LIKE '%@%'").use { rs -> rs.next(); counts["bans_with_at"] = rs.getLong(1) }
+                st.executeQuery("SELECT count(*) FROM incidents WHERE detail LIKE '%@%'").use { rs -> rs.next(); counts["incidents_with_at"] = rs.getLong(1) }
+                st.executeQuery("SELECT count(*) FROM clients WHERE id LIKE '%@%' OR label LIKE '%@%'").use { rs -> rs.next(); counts["clients_with_at"] = rs.getLong(1) }
+            }
+            val flywayRows = mutableListOf<FlywayRowDto>()
+            conn.createStatement().use { st ->
+                st.executeQuery("SELECT installed_rank, version, description, script, checksum, success FROM flyway_schema_history ORDER BY installed_rank").use { rs ->
+                    while (rs.next()) {
+                        flywayRows += FlywayRowDto(
+                            rank = rs.getInt("installed_rank"),
+                            version = rs.getString("version"),
+                            description = rs.getString("description"),
+                            script = rs.getString("script"),
+                            checksum = rs.getInt("checksum").takeIf { !rs.wasNull() },
+                            success = rs.getBoolean("success")
+                        )
+                    }
+                }
+            }
+            val defaultTimeout = conn.createStatement().use { st ->
+                st.executeQuery("SELECT column_default FROM information_schema.columns WHERE table_name = 'monitored_targets' AND column_name = 'timeout_ms'").use { rs ->
+                    if (rs.next()) rs.getString(1)?.toIntOrNull() ?: 10000 else 10000
+                }
+            }
+            DbInspectResponse(
+                counts = counts,
+                flywaySchemaHistory = flywayRows,
+                defaultProbeTimeoutMs = defaultTimeout
+            )
+        }
+        call.respond(result)
+    }
+
     // GET /api/clients -> per-client real-time traffic & status (requires valid JWT, masked for VIEWER)
     get("/api/clients") {
         val claims = call.requireAuth(jwtService) ?: return@get

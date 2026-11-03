@@ -147,8 +147,14 @@ class Migration2To3Test {
         }
     }
 
+    /**
+     * NOTE: This test is ASSUMPTION-BASED.
+     * `1.json` was reconstructed from `2.json` based on git diff analysis between commit 90898406 (v1)
+     * and 3a18d023 (v2) confirming zero @Entity changes (identical tables, columns, and identityHash).
+     * It was not exported by running Room KSP directly on a real git checkout of v1 commit 90898406.
+     */
     @Test
-    fun migrate1To2To3_preservesSeededV1RowsAndCreatesAllForeignKeyIndices() {
+    fun migrate1To2To3_assumptionBased_preservesSeededV1RowsAndCreatesAllForeignKeyIndices() {
         val schemaV1File = resolveSchemaFile(1)
         val schemaV3File = resolveSchemaFile(3)
 
