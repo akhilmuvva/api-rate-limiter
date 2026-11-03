@@ -23,6 +23,12 @@ private val dynamicLocalEscrows = CopyOnWriteArrayList<PolyLanceEscrow>()
 private fun ApplicationCall.recordUpstream(): (Long, String) -> Unit = { ms, proto ->
     attributes.put(UpstreamMsKey, ms)
     attributes.put(UpstreamProtocolKey, proto)
+    if (!response.isCommitted) {
+        runCatching {
+            response.headers.append("X-Upstream-Ms", ms.toString(), safeOnly = false)
+            response.headers.append("X-Upstream-Protocol", proto, safeOnly = false)
+        }
+    }
 }
 
 fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {

@@ -253,8 +253,9 @@ fun Application.module(
                     )
                 )
 
+                val wasAlreadyBanned = rateLimiter.anomalyDetector.isBanned(clientId)
                 val ban = rateLimiter.anomalyDetector.recordAndInspect(clientId, path, 429, webSocketManager)
-                if (ban != null) {
+                if (!wasAlreadyBanned && ban != null) {
                     historyManager.recordIncident(
                         type = "Anomaly Ban Triggered",
                         severity = "HIGH",
@@ -277,9 +278,13 @@ fun Application.module(
             val totalMs = ((System.nanoTime() - handlerStartNs) / 1_000_000L).coerceAtLeast(0L)
             val upstreamMs = call.attributes.getOrNull(com.cutm.nt14.gateway.core.UpstreamMsKey)
             val upstreamProto = call.attributes.getOrNull(com.cutm.nt14.gateway.core.UpstreamProtocolKey)
-            if (upstreamMs != null) call.response.header("X-Upstream-Ms", upstreamMs.toString())
-            if (upstreamProto != null) call.response.header("X-Upstream-Protocol", upstreamProto)
-            call.response.header("X-Total-Ms", totalMs.toString())
+            if (!call.response.isCommitted) {
+                runCatching {
+                    if (upstreamMs != null) call.response.header("X-Upstream-Ms", upstreamMs.toString())
+                    if (upstreamProto != null) call.response.header("X-Upstream-Protocol", upstreamProto)
+                    call.response.header("X-Total-Ms", totalMs.toString())
+                }
+            }
             val status = call.response.status()?.value ?: 200
 
             val log = historyManager.recordRequest(
