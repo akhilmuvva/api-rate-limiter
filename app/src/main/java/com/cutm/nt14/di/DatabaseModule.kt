@@ -28,16 +28,13 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): NT14Database {
-        val builder = Room.databaseBuilder(
+        return Room.databaseBuilder(
             context,
             NT14Database::class.java,
             "nt14_database"
-        ).addMigrations(MIGRATION_2_3)
-        // Restrict fallbackToDestructiveMigration to non-debug builds so bad migrations fail loudly in debug
-        if (!com.cutm.nt14.BuildConfig.DEBUG) {
-            builder.fallbackToDestructiveMigration()
-        }
-        return builder.build()
+        )
+            .addMigrations(MIGRATION_2_3)
+            .build()
     }
 
     @Provides

@@ -773,4 +773,105 @@ class PersistenceAndMonitoringTest {
         assertTrue(lightResp.bodyAsText().contains("\"status\""))
         assertTrue(lightResp.bodyAsText().contains("UP"))
     }
+
+    @Test
+    fun testBanByClientIpHashBlocksClientInRateLimiter() = testApplication {
+        val adminToken = jwtService.sign("admin_1", "akpolylance@gmail.com", "ADMIN")
+        val upstreamServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        upstreamServer.createContext("/api/jobs") { ex ->
+            val body = """{"jobs":[]}""".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        upstreamServer.start()
+
+        try {
+            val testUpstream = PolyLanceUpstream("http://127.0.0.1:${upstreamServer.address.port}")
+            application {
+                module(customDatabase = db, startBackgroundMonitor = false, customUpstream = testUpstream, customJwtService = jwtService)
+            }
+
+            val rawIp = "203.0.113.195"
+            val rawHash = IpPrivacy.hash(rawIp)
+
+            // 1. Before ban, client request is allowed (200 OK)
+            val initialResp = client.get("/api/polylance/escrows") {
+                header("X-Forwarded-For", rawIp)
+            }
+            assertEquals(HttpStatusCode.OK, initialResp.status)
+
+            // 2. Fetch /api/clients as ADMIN and confirm raw IP is masked while clientIpHash is exposed
+            val clients = json.decodeFromString<List<ClientInfo>>(
+                client.get("/api/clients") {
+                    header(HttpHeaders.Authorization, "Bearer $adminToken")
+                }.bodyAsText()
+            )
+            val targetClient = clients.first { it.clientIpHash == rawHash }
+            assertEquals("iphash:$rawHash", targetClient.id)
+            assertEquals("ip:203.0.113.x", targetClient.maskedId)
+
+            // 3. Ban client using its clientIpHash (24-char HMAC hex) via POST /api/bans
+            val banResp = client.post("/api/bans") {
+                header(HttpHeaders.Authorization, "Bearer $adminToken")
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(CreateBanRequest(clientId = targetClient.clientIpHash!!, durationMinutes = 15, reason = "Ban by clientIpHash test")))
+            }
+            assertEquals(HttpStatusCode.Created, banResp.status)
+
+            // 4. Subsequent request from rawIp is immediately blocked (429 Too Many Requests) by the rate limiter
+            val blockedResp = client.get("/api/polylance/escrows") {
+                header("X-Forwarded-For", rawIp)
+            }
+            assertEquals(HttpStatusCode.TooManyRequests, blockedResp.status)
+            assertTrue(blockedResp.bodyAsText().contains("Rate limit exceeded"))
+            println("EVIDENCE_BAN_BY_CLIENT_IP_HASH: clientIpHash=$rawHash maskedId=${targetClient.maskedId} statusBefore=${initialResp.status.value} statusAfterBan=${blockedResp.status.value}")
+        } finally {
+            upstreamServer.stop(0)
+        }
+    }
+
+    @Test
+    fun testThirtyRequestBurstCoalescesWithBatchesLessThanWritten() = runBlocking {
+        val writer = RequestLogWriter(db, capacity = 10_000, batchSize = 500, flushIntervalMs = 200L)
+        val writerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+        writer.start(writerScope)
+        try {
+            val now = System.currentTimeMillis()
+            // Enqueue a 30-request burst synchronously (non-blocking offer)
+            for (i in 1..30) {
+                val accepted = writer.offer(
+                    LogEntry(
+                        id = LogIdGenerator.next(now + i),
+                        tsMs = now + i,
+                        clientId = "ip:198.51.100.x",
+                        clientIpHash = IpPrivacy.hash("198.51.100.$i"),
+                        method = "GET",
+                        path = "/api/polylance/escrows",
+                        status = 200,
+                        latencyMs = 45L,
+                        decision = "allowed",
+                        source = "real",
+                        upstream = "https://polylance-fv-1-45wy.onrender.com/api/jobs",
+                        limiterMs = 0L,
+                        upstreamMs = 40L,
+                        totalMs = 45L
+                    )
+                )
+                assertTrue(accepted)
+            }
+
+            // Wait for background flush cycle to drain the 30 queued items
+            kotlinx.coroutines.delay(450L)
+            val written = writer.written.get()
+            val batches = writer.batches.get()
+            val pending = writer.pending()
+            val dropped = writer.dropped.get()
+            println("EVIDENCE_30_BURST_BATCHER: written=$written batches=$batches queued=$pending dropped=$dropped")
+            assertEquals(30L, written)
+            assertEquals(0, pending)
+            assertTrue("Expected batches ($batches) < written ($written) for 30-request burst", batches in 1..<written)
+        } finally {
+            writerScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
 }
