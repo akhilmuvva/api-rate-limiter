@@ -56,7 +56,8 @@ data class ClientInfo(
     val throttledCount: Long,
     val lastSeen: Long,
     val status: String, // "active", "throttled", "banned"
-    val isDemo: Boolean = false
+    val isDemo: Boolean = false,
+    val clientIpHash: String? = null
 )
 
 @Serializable

@@ -16,7 +16,7 @@ import com.cutm.nt14.data.local.entities.*
         Report::class
     ],
     version = 3,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class NT14Database : RoomDatabase() {
     abstract fun endpointDao(): EndpointDao

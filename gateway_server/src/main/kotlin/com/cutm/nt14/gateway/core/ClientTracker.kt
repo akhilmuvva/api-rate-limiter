@@ -52,7 +52,14 @@ class ClientTracker {
         cleanExpired(now)
 
         return clientMap.values.map { record ->
-            val isBanned = anomalyDetector?.isBanned(record.id) ?: false
+            val raw = record.id.removePrefix("ip:").removePrefix("demo:")
+            val isIp = com.cutm.nt14.gateway.db.IpPrivacy.looksLikeIp(raw)
+            val ipHash = if (isIp) com.cutm.nt14.gateway.db.IpPrivacy.hash(raw) else null
+            val stableId = if (ipHash != null) "iphash:$ipHash" else record.id
+            val masked = if (isIp) com.cutm.nt14.gateway.db.IpPrivacy.storedClientId(raw) else maskId(record.id)
+
+            val isBanned = (anomalyDetector?.isBanned(record.id) == true) ||
+                (anomalyDetector?.isBanned(stableId) == true)
             val rpm = record.getRpm(now)
             val status = when {
                 isBanned -> "banned"
@@ -60,18 +67,16 @@ class ClientTracker {
                 else -> "active"
             }
 
-            val masked = maskId(record.id)
-            val effectiveId = if (isAdmin) record.id else masked
-
             ClientInfo(
-                id = effectiveId,
-                maskedId = masked,
+                id = stableId,
+                maskedId = if (isAdmin && !isIp) record.id else masked,
                 requestsPerMin = ((rpm * 10.0).roundToInt()) / 10.0,
                 totalRequests = record.totalRequests.get(),
                 throttledCount = record.throttledRequests.get(),
                 lastSeen = record.lastSeen,
                 status = status,
-                isDemo = record.isDemo
+                isDemo = record.isDemo,
+                clientIpHash = ipHash
             )
         }.sortedByDescending { it.requestsPerMin }
     }

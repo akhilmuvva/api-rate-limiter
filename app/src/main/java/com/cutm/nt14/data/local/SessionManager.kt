@@ -61,7 +61,7 @@ class SessionManager @Inject constructor(
     }
 
     val manualHost: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[GATEWAY_MANUAL_HOST] ?: "127.0.0.1:8000"
+        prefs[GATEWAY_MANUAL_HOST] ?: "https://api-rate-limiter-gateway-qgfy.onrender.com"
     }
 
     val lanHost: Flow<String> = context.dataStore.data.map { prefs ->

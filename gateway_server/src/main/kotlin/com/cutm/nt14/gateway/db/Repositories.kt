@@ -206,14 +206,15 @@ class LogRepository(private val db: GatewayDatabase) {
                         else -> "active"
                     }
                     out += ClientInfo(
-                        id = if (isAdmin) key else label,
+                        id = key,
                         maskedId = label,
                         requestsPerMin = 0.0,
                         totalRequests = rs.getLong("total_requests"),
                         throttledCount = throttled,
                         lastSeen = rs.getTimestamp("last_seen").time,
                         status = status,
-                        isDemo = rs.getString("source") == "demo"
+                        isDemo = rs.getString("source") == "demo",
+                        clientIpHash = if (key.startsWith("iphash:")) key.removePrefix("iphash:") else null
                     )
                 }
             }

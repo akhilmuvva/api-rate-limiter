@@ -318,7 +318,11 @@ fun LogScreen(
                                             color = PolyTextMuted
                                         )
                                         Text(
-                                            text = "${log.latencyMs}ms",
+                                            text = buildString {
+                                                append("total:${log.totalMs ?: log.latencyMs}ms")
+                                                log.limiterMs?.let { append(" lim:${it}ms") }
+                                                log.upstreamMs?.let { append(" up:${it}ms") }
+                                            },
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = PolyTextSecondary,
@@ -389,7 +393,9 @@ fun LogScreen(
                         DetailItem("Method", log.method)
                         DetailItem("Client ID", log.clientId)
                         DetailItem("HTTP Status", log.status.toString())
-                        DetailItem("Latency", "${log.latencyMs} ms")
+                        DetailItem("Total Latency (total_ms)", "${log.totalMs ?: log.latencyMs} ms")
+                        DetailItem("Limiter Decision (limiter_ms)", "${log.limiterMs ?: 0} ms")
+                        DetailItem("Upstream Call (upstream_ms)", log.upstreamMs?.let { "$it ms" } ?: "null (throttled/local)")
                         DetailItem("Policy Decision", log.decision)
                         DetailItem("Timestamp", Date(log.timestamp).toString())
                     }

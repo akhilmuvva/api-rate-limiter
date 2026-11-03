@@ -79,6 +79,13 @@ class IncidentViewModel @Inject constructor(
         }
     }
 
+    fun resolveIncident(id: String) {
+        viewModelScope.launch {
+            val ok = repository.resolveIncident(id)
+            _actionMessage.value = if (ok) "Incident $id resolved" else "Failed to resolve incident $id"
+        }
+    }
+
     fun clearActionMessage() {
         _actionMessage.value = null
     }

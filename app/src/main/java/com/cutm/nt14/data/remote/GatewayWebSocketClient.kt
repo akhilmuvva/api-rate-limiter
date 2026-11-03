@@ -82,7 +82,7 @@ class GatewayWebSocketClient @Inject constructor(
     private val _connectionState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Idle)
     val connectionState: StateFlow<GatewayConnectionState> = _connectionState.asStateFlow()
 
-    private val _connectedHost = MutableStateFlow("127.0.0.1:8000")
+    private val _connectedHost = MutableStateFlow(GatewayEndpointResolver.CLOUD_DEFAULT_URL)
     val connectedHost: StateFlow<String> = _connectedHost.asStateFlow()
 
     // Realtime reactive streams
@@ -146,34 +146,51 @@ class GatewayWebSocketClient @Inject constructor(
         return "$scheme://$cleanHost$cleanPath$resumeQuery"
     }
 
+    private suspend fun refreshJwtForHost(currentHost: String): String? {
+        val currentRole = runCatching { sessionManager.userRole.first() }.getOrDefault(UserRole.VIEWER)
+        if (currentRole == UserRole.ADMIN) {
+            try {
+                val adminResp = authApiProvider.get().loginAsDevAdmin()
+                sessionManager.saveTokenForHost(currentHost, adminResp.token, adminResp.role, adminResp.email)
+                return adminResp.token
+            } catch (e: Exception) {
+                Log.w(tag, "Auto admin exchange note: ${e.message}")
+            }
+        }
+        return try {
+            val guestResp = authApiProvider.get().loginAsGuest()
+            sessionManager.saveTokenForHost(currentHost, guestResp.token, guestResp.role, guestResp.email)
+            guestResp.token
+        } catch (e: Exception) {
+            Log.w(tag, "Auto guest exchange note on target switch: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun attachAuthHeaders(builder: Request.Builder): Request.Builder {
         val currentHost = _connectedHost.value
         var jwt = sessionManager.getTokenForHost(currentHost)
         if (jwt.isNullOrBlank()) {
-            val currentRole = sessionManager.userRole.first()
-            if (currentRole == UserRole.ADMIN) {
-                try {
-                    val adminResp = authApiProvider.get().loginAsDevAdmin()
-                    jwt = adminResp.token
-                    sessionManager.saveTokenForHost(currentHost, adminResp.token, adminResp.role, adminResp.email)
-                } catch (e: Exception) {
-                    Log.w(tag, "Auto admin exchange note: ${e.message}")
-                }
-            }
-            if (jwt.isNullOrBlank()) {
-                try {
-                    val guestResp = authApiProvider.get().loginAsGuest()
-                    jwt = guestResp.token
-                    sessionManager.saveTokenForHost(currentHost, guestResp.token, guestResp.role, guestResp.email)
-                } catch (e: Exception) {
-                    Log.w(tag, "Auto guest exchange note on target switch: ${e.message}")
-                }
-            }
+            jwt = refreshJwtForHost(currentHost)
         }
         if (!jwt.isNullOrBlank()) {
             builder.header("Authorization", "Bearer $jwt")
         }
         return builder
+    }
+
+    /** Executes an authenticated HTTP call, re-authenticating and retrying once if the server returns 401. */
+    private suspend fun executeWithAuthRetry(buildRequest: () -> Request.Builder): Response {
+        val firstReq = attachAuthHeaders(buildRequest()).build()
+        val firstResp = client.newCall(firstReq).execute()
+        if (firstResp.code != 401) return firstResp
+        firstResp.close()
+        val refreshed = refreshJwtForHost(_connectedHost.value)
+        val retryBuilder = buildRequest()
+        if (!refreshed.isNullOrBlank()) {
+            retryBuilder.header("Authorization", "Bearer $refreshed")
+        }
+        return client.newCall(retryBuilder.build()).execute()
     }
 
     fun connect() {
@@ -268,6 +285,9 @@ class GatewayWebSocketClient @Inject constructor(
                 Log.w(tag, "WebSocket failure on $host [HTTP ${code ?: 0}]: ${t.message}")
                 this@GatewayWebSocketClient.webSocket = null
                 _connectionState.value = GatewayConnectionState.Failed(code, userMsg)
+                if (code == 401 || code == 403) {
+                    scope.launch { refreshJwtForHost(host) }
+                }
                 resolver.reportFailure(host)
                 scheduleReconnect()
             }
@@ -320,9 +340,17 @@ class GatewayWebSocketClient @Inject constructor(
             rps = obj.optDouble("rps", 0.0),
             allowed = obj.optLong("allowed", 0L),
             throttled = obj.optLong("throttled", 0L),
+            serverErrors = obj.optLong("serverErrors", 0L),
             errorRate = obj.optDouble("errorRate", 0.0),
+            throttleRate = obj.optDouble("throttleRate", 0.0),
             p50LatencyMs = obj.optLong("p50LatencyMs", 0L),
             p95LatencyMs = obj.optLong("p95LatencyMs", 0L),
+            p50LimiterMs = obj.optLong("p50LimiterMs", 0L),
+            p95LimiterMs = obj.optLong("p95LimiterMs", 0L),
+            p50UpstreamMs = obj.optLong("p50UpstreamMs", 0L),
+            p95UpstreamMs = obj.optLong("p95UpstreamMs", 0L),
+            p50TotalMs = obj.optLong("p50TotalMs", 0L),
+            p95TotalMs = obj.optLong("p95TotalMs", 0L),
             activeClients = obj.optInt("activeClients", 0),
             endpointCounts = endpointCountsMap,
             demoMode = obj.optBoolean("demoMode", false)
@@ -342,7 +370,8 @@ class GatewayWebSocketClient @Inject constructor(
                     throttledCount = cObj.optLong("throttledCount", 0L),
                     lastSeen = cObj.optLong("lastSeen", 0L),
                     status = cObj.optString("status", "active"),
-                    isDemo = cObj.optBoolean("isDemo", false)
+                    isDemo = cObj.optBoolean("isDemo", false),
+                    clientIpHash = cObj.optString("clientIpHash").takeIf { it.isNotBlank() && it != "null" }
                 )
             )
         }
@@ -366,6 +395,8 @@ class GatewayWebSocketClient @Inject constructor(
             expectedStatus = tObj.optInt("expectedStatus", 200),
             intervalSec = tObj.optInt("intervalSec", 30),
             enabled = tObj.optBoolean("enabled", true),
+            source = tObj.optString("source", "real"),
+            synthetic = tObj.optBoolean("synthetic", false),
             up = if (tObj.isNull("up")) null else tObj.optBoolean("up"),
             lastStatusCode = if (tObj.isNull("lastStatusCode")) null else tObj.optInt("lastStatusCode"),
             lastLatencyMs = if (tObj.isNull("lastLatencyMs")) null else tObj.optLong("lastLatencyMs"),
@@ -391,7 +422,10 @@ class GatewayWebSocketClient @Inject constructor(
         decision = lObj.optString("decision", "allowed"),
         source = lObj.optString("source", "real"),
         upstream = lObj.optString("upstream").takeIf { it.isNotBlank() && it != "null" },
-        clientIpHash = lObj.optString("clientIpHash").takeIf { it.isNotBlank() && it != "null" }
+        clientIpHash = lObj.optString("clientIpHash").takeIf { it.isNotBlank() && it != "null" },
+        limiterMs = if (lObj.isNull("limiterMs")) null else lObj.optLong("limiterMs"),
+        upstreamMs = if (lObj.isNull("upstreamMs")) null else lObj.optLong("upstreamMs"),
+        totalMs = if (lObj.isNull("totalMs")) null else lObj.optLong("totalMs")
     )
 
     private fun handleLiveEvent(jsonStr: String) {
@@ -738,8 +772,7 @@ class GatewayWebSocketClient @Inject constructor(
     suspend fun fetchStats(): GatewayMetrics? = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/stats")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val obj = JSONObject(body)
@@ -757,8 +790,7 @@ class GatewayWebSocketClient @Inject constructor(
     suspend fun fetchRules(): List<RateLimitRuleDto> = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/rules")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val arr = JSONArray(body)
@@ -828,8 +860,7 @@ class GatewayWebSocketClient @Inject constructor(
     suspend fun fetchBans(): List<ActiveBanDto> = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/bans")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val arr = JSONArray(body)
@@ -856,8 +887,7 @@ class GatewayWebSocketClient @Inject constructor(
     suspend fun fetchClients(): List<ClientInfoDto> = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/clients")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val arr = JSONArray(body)
@@ -868,6 +898,25 @@ class GatewayWebSocketClient @Inject constructor(
             }
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    suspend fun resolveIncident(id: String): Boolean = withContext(Dispatchers.IO) {
+        val url = buildHttpUrl(_connectedHost.value, "/api/incidents/$id/resolve")
+        try {
+            executeWithAuthRetry {
+                Request.Builder().url(url).patch("{}".toRequestBody("application/json".toMediaType()))
+            }.use { resp ->
+                if (resp.isSuccessful) {
+                    val now = System.currentTimeMillis()
+                    _liveIncidents.value = _liveIncidents.value.map {
+                        if (it.id == id) it.copy(resolvedAt = it.resolvedAt ?: now) else it
+                    }
+                    true
+                } else false
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -971,8 +1020,7 @@ class GatewayWebSocketClient @Inject constructor(
         val srcQuery = if (!source.isNullOrBlank() && source != "all") "&source=$source" else ""
         val url = buildHttpUrl(_connectedHost.value, "/api/reports?range=$range$srcQuery")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string().orEmpty()
                     val obj = JSONObject(body)
@@ -994,8 +1042,16 @@ class GatewayWebSocketClient @Inject constructor(
                         allowedRequests = obj.optLong("allowedRequests"),
                         blockedRequests = obj.optLong("blockedRequests"),
                         errorRate = obj.optDouble("errorRate"),
+                        throttleRate = obj.optDouble("throttleRate", 0.0),
                         avgLatencyMs = obj.optLong("avgLatencyMs"),
+                        p50LatencyMs = obj.optLong("p50LatencyMs", 0L),
                         p95LatencyMs = obj.optLong("p95LatencyMs"),
+                        p50LimiterMs = obj.optLong("p50LimiterMs", 0L),
+                        p95LimiterMs = obj.optLong("p95LimiterMs", 0L),
+                        p50UpstreamMs = obj.optLong("p50UpstreamMs", 0L),
+                        p95UpstreamMs = obj.optLong("p95UpstreamMs", 0L),
+                        p50TotalMs = obj.optLong("p50TotalMs", 0L),
+                        p95TotalMs = obj.optLong("p95TotalMs", 0L),
                         peakRps = obj.optDouble("peakRps"),
                         topEndpoints = topEndpointsMap,
                         topClients = topClientsMap,
@@ -1018,8 +1074,7 @@ class GatewayWebSocketClient @Inject constructor(
         val srcQuery = if (!source.isNullOrBlank() && source != "all") "&source=$source" else ""
         val url = buildHttpUrl(_connectedHost.value, "/api/metrics?range=$range$srcQuery")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (!resp.isSuccessful) return@withContext null
                 val obj = JSONObject(resp.body?.string().orEmpty())
                 val ptsArr = obj.optJSONArray("points") ?: JSONArray()
@@ -1033,8 +1088,16 @@ class GatewayWebSocketClient @Inject constructor(
                             allowed = p.optLong("allowed"),
                             throttled = p.optLong("throttled"),
                             errors = p.optLong("errors"),
+                            errorRate = p.optDouble("errorRate", 0.0),
+                            throttleRate = p.optDouble("throttleRate", 0.0),
                             p50 = p.optDouble("p50", 0.0),
-                            p95 = p.optDouble("p95", 0.0)
+                            p95 = p.optDouble("p95", 0.0),
+                            limiterP50 = p.optDouble("limiterP50", 0.0),
+                            limiterP95 = p.optDouble("limiterP95", 0.0),
+                            upstreamP50 = if (p.isNull("upstreamP50")) null else p.optDouble("upstreamP50"),
+                            upstreamP95 = if (p.isNull("upstreamP95")) null else p.optDouble("upstreamP95"),
+                            totalP50 = p.optDouble("totalP50", 0.0),
+                            totalP95 = p.optDouble("totalP95", 0.0)
                         )
                     )
                 }
@@ -1044,6 +1107,8 @@ class GatewayWebSocketClient @Inject constructor(
                     bucketSeconds = obj.optInt("bucketSeconds", 60),
                     source = obj.optString("source", source ?: "all"),
                     points = pts,
+                    errorRate = obj.optDouble("errorRate", 0.0),
+                    throttleRate = obj.optDouble("throttleRate", 0.0),
                     lastRollupAt = obj.optLong("lastRollupAt", 0L),
                     generatedAt = obj.optLong("generatedAt", System.currentTimeMillis())
                 )
@@ -1066,8 +1131,7 @@ class GatewayWebSocketClient @Inject constructor(
         val clientParam = if (!clientQuery.isNullOrBlank()) "&client=$clientQuery" else ""
         val url = buildHttpUrl(_connectedHost.value, "/api/logs?limit=$limit$cursorQuery$srcQuery$statusQuery$clientParam")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string()?.trim().orEmpty()
                     val list = mutableListOf<RequestLogDto>()
@@ -1110,8 +1174,7 @@ class GatewayWebSocketClient @Inject constructor(
     suspend fun fetchTargetsStatus(): List<TargetStatusDto> = withContext(Dispatchers.IO) {
         val url = buildHttpUrl(_connectedHost.value, "/api/targets/status")
         try {
-            val req = attachAuthHeaders(Request.Builder().url(url).get()).build()
-            client.newCall(req).execute().use { resp ->
+            executeWithAuthRetry { Request.Builder().url(url).get() }.use { resp ->
                 if (!resp.isSuccessful) return@withContext emptyList()
                 val arr = JSONArray(resp.body?.string().orEmpty())
                 val list = mutableListOf<TargetStatusDto>()

@@ -258,14 +258,38 @@ fun ReportScreen(
                                 ) {
                                     ReportStatTile(
                                         modifier = Modifier.weight(1f),
-                                        title = "AVG LATENCY",
-                                        value = "${rep.avgLatencyMs}ms",
+                                        title = "THROTTLE RATE",
+                                        value = "%.1f%%".format(rep.throttleRate * 100),
+                                        color = if (rep.throttleRate > 0) PolyWarning else PolySuccess
+                                    )
+                                    ReportStatTile(
+                                        modifier = Modifier.weight(1f),
+                                        title = "5XX ERROR RATE",
+                                        value = "%.1f%% (${rep.serverErrors})".format(rep.errorRate * 100),
+                                        color = if (rep.serverErrors > 0) PolyDanger else PolySuccess
+                                    )
+                                    ReportStatTile(
+                                        modifier = Modifier.weight(1f),
+                                        title = "UPSTREAM P50/P95",
+                                        value = "${rep.p50UpstreamMs}/${rep.p95UpstreamMs}ms",
+                                        color = PolyPrimary
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    ReportStatTile(
+                                        modifier = Modifier.weight(1f),
+                                        title = "LIMITER P50/P95",
+                                        value = "${rep.p50LimiterMs}/${rep.p95LimiterMs}ms",
                                         color = PolyPrimary
                                     )
                                     ReportStatTile(
                                         modifier = Modifier.weight(1f),
-                                        title = "P95 LATENCY",
-                                        value = "${rep.p95LatencyMs}ms",
+                                        title = "TOTAL P50/P95",
+                                        value = "${rep.p50TotalMs}/${rep.p95LatencyMs}ms",
                                         color = PolyPurple
                                     )
                                     ReportStatTile(
@@ -274,25 +298,6 @@ fun ReportScreen(
                                         value = "${rep.peakRps} rps",
                                         color = PolyCyan
                                     )
-                                    if (metricsSeries != null && metricsSeries!!.points.isNotEmpty()) {
-                                        val pts = metricsSeries!!.points
-                                        Text(
-                                            text = "P95 LATENCY ROLLUP SPARKLINE (metrics_1m: ${pts.size} buckets)",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = PolyTextMuted
-                                        )
-                                        LatencySparkline(
-                                            latencies = pts.map { it.p95.toLong() },
-                                            upFlags = pts.map { it.errors == 0L },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(42.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(Color(0xFFF8FAFC))
-                                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                        )
-                                    }
                                 }
                             }
                         }

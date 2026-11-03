@@ -95,6 +95,10 @@ class GatewayRepository @Inject constructor(
         return wsClient.unbanClient(clientId)
     }
 
+    suspend fun resolveIncident(id: String): Boolean {
+        return wsClient.resolveIncident(id)
+    }
+
     suspend fun simulate(endpoint: String, count: Int, rps: Double, profile: String): Boolean {
         val req = SimulateRequestDto(
             endpoint = endpoint,

@@ -4,9 +4,17 @@ data class GatewayMetrics(
     val rps: Double = 0.0,
     val allowed: Long = 0,
     val throttled: Long = 0,
+    val serverErrors: Long = 0,
     val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long = 0,
+    val p50LimiterMs: Long = 0,
+    val p95LimiterMs: Long = 0,
+    val p50UpstreamMs: Long = 0,
+    val p95UpstreamMs: Long = 0,
+    val p50TotalMs: Long = 0,
+    val p95TotalMs: Long = 0,
     val activeClients: Int = 0,
     val endpointCounts: Map<String, Long> = emptyMap(),
     val demoMode: Boolean = false
@@ -29,7 +37,10 @@ data class RequestLogDto(
     val decision: String,
     val source: String = "real",
     val upstream: String? = null,
-    val clientIpHash: String? = null
+    val clientIpHash: String? = null,
+    val limiterMs: Long? = null,
+    val upstreamMs: Long? = null,
+    val totalMs: Long? = null
 )
 
 data class LogsPageDto(
@@ -57,8 +68,16 @@ data class TrafficReportDto(
     val allowedRequests: Long,
     val blockedRequests: Long,
     val errorRate: Double,
+    val throttleRate: Double = 0.0,
     val avgLatencyMs: Long,
+    val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long,
+    val p50LimiterMs: Long = 0,
+    val p95LimiterMs: Long = 0,
+    val p50UpstreamMs: Long = 0,
+    val p95UpstreamMs: Long = 0,
+    val p50TotalMs: Long = 0,
+    val p95TotalMs: Long = 0,
     val peakRps: Double,
     val topEndpoints: Map<String, Long>,
     val topClients: Map<String, Long>,
@@ -77,8 +96,16 @@ data class MetricsPointDto(
     val allowed: Long,
     val throttled: Long,
     val errors: Long,
+    val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val p50: Double,
-    val p95: Double
+    val p95: Double,
+    val limiterP50: Double = 0.0,
+    val limiterP95: Double = 0.0,
+    val upstreamP50: Double? = null,
+    val upstreamP95: Double? = null,
+    val totalP50: Double = 0.0,
+    val totalP95: Double = 0.0
 )
 
 data class MetricsSeriesDto(
@@ -86,6 +113,8 @@ data class MetricsSeriesDto(
     val bucketSeconds: Int,
     val source: String,
     val points: List<MetricsPointDto>,
+    val errorRate: Double = 0.0,
+    val throttleRate: Double = 0.0,
     val lastRollupAt: Long,
     val generatedAt: Long
 )
@@ -98,6 +127,8 @@ data class TargetStatusDto(
     val expectedStatus: Int = 200,
     val intervalSec: Int = 30,
     val enabled: Boolean = true,
+    val source: String = "real",
+    val synthetic: Boolean = false,
     val up: Boolean? = null,
     val lastStatusCode: Int? = null,
     val lastLatencyMs: Long? = null,
@@ -118,7 +149,9 @@ data class TargetRequestDto(
     val expectedStatus: Int = 200,
     val intervalSec: Int = 30,
     val timeoutMs: Int = 10_000,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val source: String = "real",
+    val synthetic: Boolean = false
 )
 
 data class RateLimitRuleDto(
@@ -144,7 +177,8 @@ data class ClientInfoDto(
     val throttledCount: Long = 0L,
     val lastSeen: Long = 0L,
     val status: String = "active", // "active", "throttled", "banned"
-    val isDemo: Boolean = false
+    val isDemo: Boolean = false,
+    val clientIpHash: String? = null
 )
 
 data class WhoAmIDto(

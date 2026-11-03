@@ -530,17 +530,17 @@ fun AdminDashboardContent(
                                     icon = Icons.Default.Place
                                 ),
                                 MetricTileData(
-                                    title = "ERROR / THROTTLE",
-                                    value = "%.1f%%".format(uiState.errorRate * 100),
-                                    subtext = "429 rate throttled",
-                                    accentColor = if (uiState.errorRate > 0) Nt14Ui.Warn else Nt14Ui.Ok,
+                                    title = "THROTTLE (429)",
+                                    value = "%.1f%%".format(uiState.throttleRate * 100),
+                                    subtext = "5xx err: %.1f%%".format(uiState.errorRate * 100),
+                                    accentColor = if (uiState.throttleRate > 0) Nt14Ui.Warn else Nt14Ui.Ok,
                                     icon = Icons.Default.Warning
                                 ),
                                 MetricTileData(
-                                    title = "ACTIVE INCIDENTS",
-                                    value = uiState.activeIncidents.toString(),
-                                    subtext = if (uiState.activeIncidents > 0) "Immediate attention" else "Zero threats",
-                                    accentColor = if (uiState.activeIncidents > 0) Nt14Ui.Blocked else Nt14Ui.Ok,
+                                    title = "UPSTREAM P50/P95",
+                                    value = "${uiState.p50UpstreamMs}/${uiState.p95UpstreamMs}ms",
+                                    subtext = "Limiter p50: ${uiState.p50LimiterMs}ms",
+                                    accentColor = Nt14Ui.Accent,
                                     icon = Icons.Default.Notifications
                                 )
                             )

@@ -16,7 +16,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
-    private val MIGRATION_2_3 = object : Migration(2, 3) {
+    internal val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_AbuseEvents_logId` ON `AbuseEvents` (`logId`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_DDoSIncidents_endpointId` ON `DDoSIncidents` (`endpointId`)")
@@ -28,14 +28,16 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): NT14Database {
-        return Room.databaseBuilder(
+        val builder = Room.databaseBuilder(
             context,
             NT14Database::class.java,
             "nt14_database"
-        )
-        .addMigrations(MIGRATION_2_3)
-        .fallbackToDestructiveMigration()
-        .build()
+        ).addMigrations(MIGRATION_2_3)
+        // Restrict fallbackToDestructiveMigration to non-debug builds so bad migrations fail loudly in debug
+        if (!com.cutm.nt14.BuildConfig.DEBUG) {
+            builder.fallbackToDestructiveMigration()
+        }
+        return builder.build()
     }
 
     @Provides

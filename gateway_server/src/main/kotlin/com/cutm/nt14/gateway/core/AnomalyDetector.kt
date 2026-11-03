@@ -135,17 +135,32 @@ class AnomalyDetector(
     fun isBanned(clientId: String): Boolean = checkBan(clientId) != null
 
     fun banClient(clientId: String, durationSeconds: Long, reason: String): BanRecord {
+        val raw = clientId.removePrefix("ip:").removePrefix("demo:").trim()
+        val storageKey = when {
+            clientId.startsWith("iphash:") -> clientId
+            IpPrivacy.looksLikeIp(raw) -> "iphash:${IpPrivacy.hash(raw)}"
+            Regex("^[0-9a-f]{24}$").matches(raw) -> "iphash:$raw"
+            else -> clientId
+        }
         val until = System.currentTimeMillis() + (durationSeconds * 1000L)
         val record = BanRecord(bannedUntil = until, reason = reason)
-        activeBans[clientId] = record
-        logger.warn("AUTO-BAN TRIGGERED for $clientId: $reason (Banned until $until)")
-        runCatching { onBan?.invoke(clientId, record) }
+        activeBans[storageKey] = record
+        logger.warn("BAN TRIGGERED for $storageKey: $reason (Banned until $until)")
+        runCatching { onBan?.invoke(storageKey, record) }
         return record
     }
 
     fun unbanClient(clientId: String): Boolean {
         var removed = false
-        for (key in candidateKeys(clientId)) {
+        val raw = clientId.removePrefix("ip:").removePrefix("demo:").trim()
+        val extraKeys = buildList {
+            addAll(candidateKeys(clientId))
+            if (Regex("^[0-9a-f]{24}$").matches(raw)) {
+                add(raw)
+                add("iphash:$raw")
+            }
+        }.distinct()
+        for (key in extraKeys) {
             if (activeBans.remove(key) != null) {
                 removed = true
                 runCatching { onUnban?.invoke(key) }

@@ -40,7 +40,7 @@ object NetworkModule {
     fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
         // Placeholder base URL as Sheets API will use Google API Client or specific sheet URL
         return Retrofit.Builder()
-            .baseUrl("https://sheets.googleapis.com/")
+            .baseUrl("https://api-rate-limiter-gateway-qgfy.onrender.com/")
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()

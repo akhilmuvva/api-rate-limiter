@@ -256,8 +256,9 @@ fun IncidentScreen(
                         }
 
                         items(sortedClients, key = { it.id }) { client ->
-                            val displayId = if (isAdmin) client.id else client.maskedId
-                            val isBanned = client.status == "banned" || activeBans.any { it.clientId == client.id }
+                            val banKey = client.clientIpHash?.let { "iphash:$it" } ?: client.id
+                            val displayId = client.maskedId
+                            val isBanned = client.status == "banned" || activeBans.any { it.clientId == client.id || it.clientId == banKey }
                             val isThrottled = client.status == "throttled"
                             val statusText = when {
                                 isBanned -> "BANNED"
@@ -624,10 +625,11 @@ fun IncidentScreen(
                         }
                     }
                 },
-                confirmButton = {
+                    confirmButton = {
                     Button(
                         onClick = {
-                            viewModel.banClient(client.id, banDurationMinutes, "Manual admin ban")
+                            val banKey = client.clientIpHash?.let { "iphash:$it" } ?: client.id
+                            viewModel.banClient(banKey, banDurationMinutes, "Manual admin ban")
                             clientToBan = null
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PolyDanger)

@@ -331,7 +331,7 @@ fun GatewayHostConfigDialog(
                         value = manualInput,
                         onValueChange = { manualInput = it },
                         label = { Text("Gateway Base URL / Host:Port") },
-                        placeholder = { Text("127.0.0.1:8000") },
+                        placeholder = { Text("https://api-rate-limiter-gateway-qgfy.onrender.com") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = PolyTextPrimary,
