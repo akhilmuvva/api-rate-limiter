@@ -81,7 +81,10 @@ private fun ResultSet.toLogDto() = RequestLogDto(
     decision = getString("decision"),
     source = getString("source"),
     upstream = getString("upstream"),
-    clientIpHash = getString("client_ip_hash")
+    clientIpHash = getString("client_ip_hash"),
+    limiterMs = runCatching { getLong("limiter_ms").takeIf { !wasNull() } }.getOrNull(),
+    upstreamMs = runCatching { getLong("upstream_ms").takeIf { !wasNull() } }.getOrNull(),
+    totalMs = runCatching { getLong("total_ms").takeIf { !wasNull() } }.getOrNull()
 )
 
 class LogRepository(private val db: GatewayDatabase) {
@@ -211,20 +214,30 @@ class MetricsRepository(private val db: GatewayDatabase) {
     fun rollup(fromMs: Long, toMs: Long): Int {
         val n = db.withConnection { c ->
             c.prepareStatement(
-                """INSERT INTO metrics_1m (minute, endpoint, source, requests, allowed, throttled, errors, p50, p95, latency_sum_ms)
+                """INSERT INTO metrics_1m (minute, endpoint, source, requests, allowed, throttled, errors, p50, p95, latency_sum_ms,
+                                           limiter_p50, limiter_p95, upstream_p50, upstream_p95, total_p50, total_p95)
                    SELECT date_trunc('minute', ts), path, source, count(*),
                           count(*) FILTER (WHERE decision = 'allowed' AND status <> 429),
                           count(*) FILTER (WHERE status = 429 OR decision <> 'allowed'),
                           count(*) FILTER (WHERE status >= 500),
                           percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms),
                           percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms),
-                          sum(latency_ms)
+                          sum(latency_ms),
+                          coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY coalesce(limiter_ms, 0)), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY coalesce(limiter_ms, 0)), 0),
+                          percentile_cont(0.5)  WITHIN GROUP (ORDER BY upstream_ms) FILTER (WHERE upstream_ms IS NOT NULL),
+                          percentile_cont(0.95) WITHIN GROUP (ORDER BY upstream_ms) FILTER (WHERE upstream_ms IS NOT NULL),
+                          coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY coalesce(total_ms, latency_ms)), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY coalesce(total_ms, latency_ms)), 0)
                    FROM request_logs
                    WHERE ts >= date_trunc('minute', ?::timestamptz) AND ts < ?
                    GROUP BY 1, 2, 3
                    ON CONFLICT (minute, endpoint, source) DO UPDATE SET
                      requests = EXCLUDED.requests, allowed = EXCLUDED.allowed, throttled = EXCLUDED.throttled,
-                     errors = EXCLUDED.errors, p50 = EXCLUDED.p50, p95 = EXCLUDED.p95, latency_sum_ms = EXCLUDED.latency_sum_ms"""
+                     errors = EXCLUDED.errors, p50 = EXCLUDED.p50, p95 = EXCLUDED.p95, latency_sum_ms = EXCLUDED.latency_sum_ms,
+                     limiter_p50 = EXCLUDED.limiter_p50, limiter_p95 = EXCLUDED.limiter_p95,
+                     upstream_p50 = EXCLUDED.upstream_p50, upstream_p95 = EXCLUDED.upstream_p95,
+                     total_p50 = EXCLUDED.total_p50, total_p95 = EXCLUDED.total_p95"""
             ).use { ps ->
                 ps.setTimestamp(1, Timestamp(fromMs))
                 ps.setTimestamp(2, Timestamp(toMs))
@@ -244,7 +257,10 @@ class MetricsRepository(private val db: GatewayDatabase) {
         if (!endpoint.isNullOrBlank()) w.add("endpoint = ?", { ps, i -> ps.setString(i, endpoint) })
         val sql = """SELECT to_timestamp(floor(extract(epoch FROM minute) / $bucketSec) * $bucketSec) AS bucket,
                             sum(requests) r, sum(allowed) a, sum(throttled) t, sum(errors) e,
-                            sum(p50 * requests) / NULLIF(sum(requests), 0) p50w, max(p95) p95m
+                            sum(p50 * requests) / NULLIF(sum(requests), 0) p50w, max(p95) p95m,
+                            sum(limiter_p50 * requests) / NULLIF(sum(requests), 0) lp50, max(limiter_p95) lp95,
+                            avg(upstream_p50) up50, max(upstream_p95) up95,
+                            sum(total_p50 * requests) / NULLIF(sum(requests), 0) tp50, max(total_p95) tp95
                      FROM metrics_1m ${w.sql()} GROUP BY bucket ORDER BY bucket"""
         val points = db.withConnection { c ->
             c.prepareStatement(sql).use { ps ->
@@ -258,7 +274,13 @@ class MetricsRepository(private val db: GatewayDatabase) {
                             throttled = rs.getLong("t"),
                             errors = rs.getLong("e"),
                             p50 = rs.getDouble("p50w"),
-                            p95 = rs.getDouble("p95m")
+                            p95 = rs.getDouble("p95m"),
+                            limiterP50 = rs.getDouble("lp50"),
+                            limiterP95 = rs.getDouble("lp95"),
+                            upstreamP50 = rs.getDouble("up50").takeIf { !rs.wasNull() },
+                            upstreamP95 = rs.getDouble("up95").takeIf { !rs.wasNull() },
+                            totalP50 = rs.getDouble("tp50"),
+                            totalP95 = rs.getDouble("tp95")
                         )
                     }.toList()
                 }
@@ -299,9 +321,28 @@ class MetricsRepository(private val db: GatewayDatabase) {
             ).use { ps -> ps.bindRange().executeQuery().use { rs ->
                 val m = LinkedHashMap<String, Long>(); while (rs.next()) m[rs.getString(1)] = rs.getLong(2); m } }
 
-            val p95 = c.prepareStatement(
-                "SELECT coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0) FROM request_logs WHERE ts >= ?$srcSql"
-            ).use { ps -> ps.bindRange().executeQuery().use { rs -> rs.next(); rs.getDouble(1).toLong() } }
+            data class Percentiles(
+                val p50: Long, val p95: Long,
+                val limP50: Long, val limP95: Long,
+                val upP50: Long, val upP95: Long,
+                val totP50: Long, val totP95: Long
+            )
+            val pct = c.prepareStatement(
+                """SELECT coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0),
+                          coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY coalesce(limiter_ms, 0)), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY coalesce(limiter_ms, 0)), 0),
+                          coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY upstream_ms) FILTER (WHERE upstream_ms IS NOT NULL), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY upstream_ms) FILTER (WHERE upstream_ms IS NOT NULL), 0),
+                          coalesce(percentile_cont(0.5)  WITHIN GROUP (ORDER BY coalesce(total_ms, latency_ms)), 0),
+                          coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY coalesce(total_ms, latency_ms)), 0)
+                   FROM request_logs WHERE ts >= ?$srcSql"""
+            ).use { ps -> ps.bindRange().executeQuery().use { rs -> rs.next(); Percentiles(
+                rs.getDouble(1).toLong(), rs.getDouble(2).toLong(),
+                rs.getDouble(3).toLong(), rs.getDouble(4).toLong(),
+                rs.getDouble(5).toLong(), rs.getDouble(6).toLong(),
+                rs.getDouble(7).toLong(), rs.getDouble(8).toLong()
+            ) } }
 
             TrafficReportDto(
                 range = normalizeRange(range),
@@ -310,7 +351,14 @@ class MetricsRepository(private val db: GatewayDatabase) {
                 blockedRequests = throttled,
                 errorRate = if (total > 0) Math.round(throttled * 1000.0 / total) / 1000.0 else 0.0,
                 avgLatencyMs = if (total > 0) latSum / total else 0L,
-                p95LatencyMs = p95,
+                p50LatencyMs = pct.p50,
+                p95LatencyMs = pct.p95,
+                p50LimiterMs = pct.limP50,
+                p95LimiterMs = pct.limP95,
+                p50UpstreamMs = pct.upP50,
+                p95UpstreamMs = pct.upP95,
+                p50TotalMs = pct.totP50,
+                p95TotalMs = pct.totP95,
                 peakRps = Math.round(peakPerMin / 60.0 * 100) / 100.0,
                 topEndpoints = topEndpoints,
                 topClients = topClients,

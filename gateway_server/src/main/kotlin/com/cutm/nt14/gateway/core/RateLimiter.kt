@@ -38,9 +38,7 @@ private class ClientLimiterPair(
     val tokenBucket: TokenBucket,
     val slidingWindow: SlidingWindow,
     @Volatile var lastAccessTime: Long = System.currentTimeMillis()
-) {
-    val lock = Mutex()
-}
+)
 
 class RateLimiter {
     // In-memory store of active rules per endpoint pattern
@@ -152,14 +150,14 @@ class RateLimiter {
             )
         }
 
-        return pair.lock.withLock {
+        return synchronized(pair) {
             pair.lastAccessTime = System.currentTimeMillis()
             // First check TokenBucket (burst ceiling)
             val tbResult = pair.tokenBucket.allow(1.0)
             if (!tbResult.allowed) {
                 // Denied by Token Bucket
                 val (_, _, swReset) = pair.slidingWindow.peek()
-                return@withLock RateLimitEvaluation(
+                return@synchronized RateLimitEvaluation(
                     allowed = false,
                     limit = rule.limitPerMin,
                     remaining = 0,
@@ -174,7 +172,7 @@ class RateLimiter {
             if (!swResult.allowed) {
                 // Denied by Sliding Window -> refund the token consumed from token bucket
                 pair.tokenBucket.refund(1.0)
-                return@withLock RateLimitEvaluation(
+                return@synchronized RateLimitEvaluation(
                     allowed = false,
                     limit = rule.limitPerMin,
                     remaining = 0,

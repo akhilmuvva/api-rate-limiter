@@ -3,12 +3,10 @@ package com.cutm.nt14.gateway.core
 import com.cutm.nt14.gateway.models.PolyLanceAttestation
 import com.cutm.nt14.gateway.models.PolyLanceEscrow
 import com.cutm.nt14.gateway.models.PolyLanceTalent
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.isSuccess
+import io.ktor.util.AttributeKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -16,26 +14,46 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.slf4j.LoggerFactory
+import java.io.ByteArrayInputStream
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.nio.charset.StandardCharsets
+import java.time.Duration
+import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.GZIPInputStream
+
+val UpstreamMsKey = AttributeKey<Long>("UpstreamMs")
+val UpstreamProtocolKey = AttributeKey<String>("UpstreamProtocol")
 
 class PolyLanceUpstreamException(message: String) : Exception(message)
 
 /**
  * Live client for the production PolyLance Zenith backend.
  *
- * Every call goes to the real PolyLance API (the same backend polylance.codes uses).
- * There is NO mock fallback: if the upstream is down, callers get an exception and
- * the gateway returns HTTP 502 so failures are visible instead of hidden.
- *
- * Upstream base URL can be overridden with the POLYLANCE_API_BASE environment variable.
+ * Uses a single process-wide long-lived java.net.http.HttpClient configured with HTTP/2
+ * multiplexing, TLS session resumption, keep-alive connection pooling, and gzip compression.
  */
 class PolyLanceUpstream(
     val baseUrl: String = System.getenv("POLYLANCE_API_BASE")
         ?: System.getenv("POLYLANCE_BASE_URL")
         ?: "https://polylance-fv-1-45wy.onrender.com"
 ) {
+    companion object {
+        val sharedHttpClient: HttpClient = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_2)
+            .connectTimeout(Duration.ofSeconds(20))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build()
+    }
+
+    @Volatile var lastProtocol: String = "HTTP_2"
+        private set
+    val totalUpstreamCalls = AtomicLong(0)
+
     fun upstreamUrlFor(gatewayPath: String): String? = when (gatewayPath) {
         "/api/polylance/escrows", "/api/orders" -> "$baseUrl/api/jobs"
         "/api/polylance/talents", "/api/users" -> "$baseUrl/api/sync"
@@ -46,25 +64,43 @@ class PolyLanceUpstream(
     private val logger = LoggerFactory.getLogger(PolyLanceUpstream::class.java)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    private val client = HttpClient(CIO) {
-        install(HttpTimeout) {
-            // Render free-tier instances can cold-start; allow time for that.
-            requestTimeoutMillis = 60_000
-            connectTimeoutMillis = 20_000
-        }
-    }
-
-    private suspend fun fetchJson(path: String): JsonElement {
+    private suspend fun fetchJson(path: String, onUpstream: ((Long, String) -> Unit)? = null): JsonElement {
         val url = "$baseUrl$path"
+        val startNs = System.nanoTime()
+        val req = HttpRequest.newBuilder(URI(url))
+            .timeout(Duration.ofSeconds(60))
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "gzip")
+            .header("User-Agent", "NT14-Gateway/1.0")
+            .GET()
+            .build()
+
         val resp = try {
-            client.get(url)
+            sharedHttpClient.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray()).await()
         } catch (e: Exception) {
+            val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+            onUpstream?.invoke(elapsedMs, lastProtocol)
             logger.warn("PolyLance upstream unreachable: $url -> ${e.message}")
             throw PolyLanceUpstreamException("PolyLance upstream unreachable: ${e.message}")
         }
-        val body = resp.bodyAsText()
-        if (!resp.status.isSuccess()) {
-            throw PolyLanceUpstreamException("PolyLance upstream returned HTTP ${resp.status.value} for $path")
+        val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+        val proto = resp.version().name
+        lastProtocol = proto
+        totalUpstreamCalls.incrementAndGet()
+        onUpstream?.invoke(elapsedMs, proto)
+
+        val status = resp.statusCode()
+        if (status !in 200..299) {
+            throw PolyLanceUpstreamException("PolyLance upstream returned HTTP $status for $path")
+        }
+        val rawBytes = resp.body()
+        val isGzip = resp.headers().firstValue("Content-Encoding").orElse("").equals("gzip", ignoreCase = true)
+        val body = withContext(Dispatchers.Default) {
+            if (isGzip && rawBytes.isNotEmpty()) {
+                GZIPInputStream(ByteArrayInputStream(rawBytes)).bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            } else {
+                String(rawBytes, StandardCharsets.UTF_8)
+            }
         }
         return json.parseToJsonElement(body)
     }
@@ -72,19 +108,32 @@ class PolyLanceUpstream(
     /**
      * Periodic health probe to keep Render upstream instance warm and prevent cold-start sleeps.
      */
-    suspend fun keepAlive(): Boolean {
+    suspend fun keepAlive(onUpstream: ((Long, String) -> Unit)? = null): Boolean {
+        val startNs = System.nanoTime()
         return try {
-            val resp = client.get("$baseUrl/health")
-            resp.status.isSuccess()
+            val req = HttpRequest.newBuilder(URI("$baseUrl/health"))
+                .timeout(Duration.ofSeconds(20))
+                .header("User-Agent", "NT14-Gateway/1.0")
+                .GET()
+                .build()
+            val resp = sharedHttpClient.sendAsync(req, HttpResponse.BodyHandlers.discarding()).await()
+            val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+            val proto = resp.version().name
+            lastProtocol = proto
+            totalUpstreamCalls.incrementAndGet()
+            onUpstream?.invoke(elapsedMs, proto)
+            resp.statusCode() in 200..299
         } catch (e: Exception) {
+            val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+            onUpstream?.invoke(elapsedMs, lastProtocol)
             logger.debug("PolyLance keepAlive notice: ${e.message}")
             false
         }
     }
 
     /** Live escrow jobs from PolyLance `/api/jobs`. */
-    suspend fun fetchEscrows(): List<PolyLanceEscrow> {
-        val root = fetchJson("/api/jobs").jsonObject
+    suspend fun fetchEscrows(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceEscrow> {
+        val root = fetchJson("/api/jobs", onUpstream).jsonObject
         val jobs = root["jobs"] as? JsonArray ?: return emptyList()
         return jobs.mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
@@ -109,15 +158,15 @@ class PolyLanceUpstream(
         }.sortedByDescending { it.createdAt ?: 0L }
     }
 
-    private suspend fun fetchProfiles(): List<JsonObject> {
-        val root = fetchJson("/api/sync").jsonObject
+    private suspend fun fetchProfiles(onUpstream: ((Long, String) -> Unit)? = null): List<JsonObject> {
+        val root = fetchJson("/api/sync", onUpstream).jsonObject
         val profiles = root["profiles"] as? JsonObject ?: return emptyList()
         return profiles.values.mapNotNull { it as? JsonObject }
     }
 
     /** GitHub-verified skill attestations derived from live PolyLance profiles. */
-    suspend fun fetchAttestations(): List<PolyLanceAttestation> {
-        return fetchProfiles()
+    suspend fun fetchAttestations(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceAttestation> {
+        return fetchProfiles(onUpstream)
             .filter { it.str("githubVerified") == "true" && !it.str("githubUsername").isNullOrBlank() }
             .map { p ->
                 val tier = p.str("reputationTier") ?: "UNRATED"
@@ -133,8 +182,8 @@ class PolyLanceUpstream(
     }
 
     /** Talent directory from live PolyLance profiles, highest score first. */
-    suspend fun fetchTalents(): List<PolyLanceTalent> {
-        return fetchProfiles()
+    suspend fun fetchTalents(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceTalent> {
+        return fetchProfiles(onUpstream)
             .filter { it.str("role") != "client" }
             .map { p ->
                 val skills = (p["skills"] as? JsonArray)

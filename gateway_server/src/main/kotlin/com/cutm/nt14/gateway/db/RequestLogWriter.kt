@@ -23,7 +23,10 @@ data class LogEntry(
     val latencyMs: Long,
     val decision: String,
     val source: String,     // "real" | "demo"
-    val upstream: String?
+    val upstream: String?,
+    val limiterMs: Long? = null,
+    val upstreamMs: Long? = null,
+    val totalMs: Long? = null
 )
 
 /**
@@ -100,8 +103,8 @@ class RequestLogWriter(
             conn.autoCommit = false
             try {
                 conn.prepareStatement(
-                    """INSERT INTO request_logs (id, ts, client_id, client_ip_hash, method, path, status, latency_ms, decision, source, upstream)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING"""
+                    """INSERT INTO request_logs (id, ts, client_id, client_ip_hash, method, path, status, latency_ms, decision, source, upstream, limiter_ms, upstream_ms, total_ms)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING"""
                 ).use { ps ->
                     for (e in batch) {
                         ps.setLong(1, e.id)
@@ -115,6 +118,9 @@ class RequestLogWriter(
                         ps.setString(9, e.decision)
                         ps.setString(10, e.source)
                         ps.setString(11, e.upstream)
+                        if (e.limiterMs != null) ps.setLong(12, e.limiterMs) else ps.setNull(12, java.sql.Types.BIGINT)
+                        if (e.upstreamMs != null) ps.setLong(13, e.upstreamMs) else ps.setNull(13, java.sql.Types.BIGINT)
+                        if (e.totalMs != null) ps.setLong(14, e.totalMs) else ps.setNull(14, java.sql.Types.BIGINT)
                         ps.addBatch()
                     }
                     ps.executeBatch()

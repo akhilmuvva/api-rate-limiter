@@ -170,7 +170,7 @@ fun Application.module(
                 path.startsWith("/api/whoami")
 
         if (path.startsWith("/api/") && !isControlPlane) {
-            val startTime = System.currentTimeMillis()
+            val handlerStartNs = System.nanoTime()
 
             // Resolve identity from JWT Bearer token if present
             val authHeader = call.request.headers["Authorization"]
@@ -182,6 +182,7 @@ fun Application.module(
             val clientId = if (jwtClaims != null) "user:${jwtClaims.email}" else rawClientIp
 
             // Evaluate rate limit: ADMIN role with valid JWT gets privileged headroom
+            val limiterStartNs = System.nanoTime()
             val evaluation = if (jwtClaims?.role == "ADMIN") {
                 RateLimitEvaluation(
                     allowed = true,
@@ -194,8 +195,10 @@ fun Application.module(
             } else {
                 rateLimiter.evaluate(path, clientId)
             }
+            val limiterMs = ((System.nanoTime() - limiterStartNs) / 1_000_000L).coerceAtLeast(0L)
 
             rateLimiter.appendHeaders(call, evaluation)
+            call.response.header("X-Limiter-Ms", limiterMs.toString())
 
             if (jwtClaims != null) {
                 call.response.header("X-Authenticated-User", jwtClaims.email)
@@ -211,7 +214,8 @@ fun Application.module(
             clientTracker.recordRequest(clientId, isThrottled = !evaluation.allowed, isDemo = isDemo)
 
             if (!evaluation.allowed) {
-                val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
+                val totalMs = ((System.nanoTime() - handlerStartNs) / 1_000_000L).coerceAtLeast(0L)
+                call.response.header("X-Total-Ms", totalMs.toString())
                 val eventType = if (evaluation.action == "BLOCK") "ip_blocked" else "blocked_request"
                 val decision = if (evaluation.action == "BLOCK") "sliding_window" else "token_bucket"
 
@@ -220,11 +224,14 @@ fun Application.module(
                     method = call.request.httpMethod.value,
                     path = path,
                     status = 429,
-                    latencyMs = latency,
+                    latencyMs = totalMs,
                     decision = decision,
                     source = sourceTag,
                     upstream = upstreamUrl,
-                    clientIp = rawClientIp
+                    clientIp = rawClientIp,
+                    limiterMs = limiterMs,
+                    upstreamMs = null,
+                    totalMs = totalMs
                 )
 
                 webSocketManager.broadcast(
@@ -235,7 +242,7 @@ fun Application.module(
                         endpoint = path,
                         method = call.request.httpMethod.value,
                         status = 429,
-                        latencyMs = latency,
+                        latencyMs = totalMs,
                         decision = decision,
                         source = sourceTag,
                         upstream = upstreamUrl,
@@ -264,7 +271,12 @@ fun Application.module(
             proceed()
 
             // After execution: emit telemetry for successful call
-            val latency = (System.currentTimeMillis() - startTime).coerceAtLeast(1L)
+            val totalMs = ((System.nanoTime() - handlerStartNs) / 1_000_000L).coerceAtLeast(0L)
+            val upstreamMs = call.attributes.getOrNull(com.cutm.nt14.gateway.core.UpstreamMsKey)
+            val upstreamProto = call.attributes.getOrNull(com.cutm.nt14.gateway.core.UpstreamProtocolKey)
+            if (upstreamMs != null) call.response.header("X-Upstream-Ms", upstreamMs.toString())
+            if (upstreamProto != null) call.response.header("X-Upstream-Protocol", upstreamProto)
+            call.response.header("X-Total-Ms", totalMs.toString())
             val status = call.response.status()?.value ?: 200
 
             val log = historyManager.recordRequest(
@@ -272,11 +284,14 @@ fun Application.module(
                 method = call.request.httpMethod.value,
                 path = path,
                 status = status,
-                latencyMs = latency,
+                latencyMs = totalMs,
                 decision = "allowed",
                 source = sourceTag,
                 upstream = upstreamUrl,
-                clientIp = rawClientIp
+                clientIp = rawClientIp,
+                limiterMs = limiterMs,
+                upstreamMs = upstreamMs,
+                totalMs = totalMs
             )
 
             rateLimiter.anomalyDetector.recordAndInspect(clientId, path, status, webSocketManager)
@@ -289,7 +304,7 @@ fun Application.module(
                     endpoint = path,
                     method = call.request.httpMethod.value,
                     status = status,
-                    latencyMs = latency,
+                    latencyMs = totalMs,
                     decision = "allowed",
                     source = sourceTag,
                     upstream = upstreamUrl,

@@ -1,8 +1,11 @@
 package com.cutm.nt14.gateway.routes
 
 import com.cutm.nt14.gateway.core.PolyLanceUpstream
+import com.cutm.nt14.gateway.core.UpstreamMsKey
+import com.cutm.nt14.gateway.core.UpstreamProtocolKey
 import com.cutm.nt14.gateway.models.*
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -17,11 +20,16 @@ import java.util.concurrent.CopyOnWriteArrayList
 private val logger = LoggerFactory.getLogger("DemoRoutes")
 private val dynamicLocalEscrows = CopyOnWriteArrayList<PolyLanceEscrow>()
 
+private fun ApplicationCall.recordUpstream(): (Long, String) -> Unit = { ms, proto ->
+    attributes.put(UpstreamMsKey, ms)
+    attributes.put(UpstreamProtocolKey, proto)
+}
+
 fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
     route("/api") {
         get("/users") {
             try {
-                val liveTalents = upstream.fetchTalents()
+                val liveTalents = upstream.fetchTalents(call.recordUpstream())
                 call.respond(liveTalents)
             } catch (e: Exception) {
                 logger.error("Failed to fetch live talents/users from PolyLance upstream: ${e.message}")
@@ -31,7 +39,7 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
 
         get("/orders") {
             try {
-                val liveEscrows = upstream.fetchEscrows()
+                val liveEscrows = upstream.fetchEscrows(call.recordUpstream())
                 val combined = dynamicLocalEscrows.toList() + liveEscrows
                 call.respond(combined)
             } catch (e: Exception) {
@@ -42,7 +50,7 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
 
         get("/products") {
             try {
-                val liveAttestations = upstream.fetchAttestations()
+                val liveAttestations = upstream.fetchAttestations(call.recordUpstream())
                 call.respond(liveAttestations)
             } catch (e: Exception) {
                 logger.error("Failed to fetch live attestations from PolyLance upstream: ${e.message}")
@@ -53,9 +61,9 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
         // Real-Time PolyLance Sovereign Protocol Endpoints
         route("/polylance") {
             get("/health") {
-                val ok = upstream.keepAlive()
+                val ok = upstream.keepAlive(call.recordUpstream())
                 if (ok) {
-                    call.respond(HttpStatusCode.OK, ApiMessage("PolyLance upstream healthy (${upstream.baseUrl})"))
+                    call.respond(HttpStatusCode.OK, ApiMessage("PolyLance upstream healthy (${upstream.baseUrl}, protocol=${upstream.lastProtocol})"))
                 } else {
                     call.respond(HttpStatusCode.BadGateway, ApiMessage("PolyLance upstream unreachable (${upstream.baseUrl})"))
                 }
@@ -63,7 +71,7 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
 
             get("/escrows") {
                 try {
-                    val liveEscrows = upstream.fetchEscrows()
+                    val liveEscrows = upstream.fetchEscrows(call.recordUpstream())
                     // Combine locally posted test escrows with live production PolyLance escrows
                     val combined = dynamicLocalEscrows.toList() + liveEscrows
                     call.respond(combined)
@@ -100,7 +108,7 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
 
             get("/attestations") {
                 try {
-                    val liveAttestations = upstream.fetchAttestations()
+                    val liveAttestations = upstream.fetchAttestations(call.recordUpstream())
                     call.respond(liveAttestations)
                 } catch (e: Exception) {
                     logger.error("Failed to fetch live attestations from PolyLance upstream: ${e.message}", e)
@@ -113,7 +121,7 @@ fun Route.demoRoutes(upstream: PolyLanceUpstream = PolyLanceUpstream()) {
 
             get("/talents") {
                 try {
-                    val liveTalents = upstream.fetchTalents()
+                    val liveTalents = upstream.fetchTalents(call.recordUpstream())
                     call.respond(liveTalents)
                 } catch (e: Exception) {
                     logger.error("Failed to fetch live talents from PolyLance upstream: ${e.message}", e)

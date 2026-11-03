@@ -33,7 +33,10 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         decision: String,
         source: String = "real",
         upstream: String? = null,
-        clientIp: String? = null
+        clientIp: String? = null,
+        limiterMs: Long? = null,
+        upstreamMs: Long? = null,
+        totalMs: Long? = latencyMs
     ): RequestLogDto {
         val privacy = com.cutm.nt14.gateway.db.IpPrivacy
         val ipForHash = clientIp ?: clientId.takeIf { privacy.looksLikeIp(it) }
@@ -50,12 +53,15 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             decision = decision,
             source = source,
             upstream = upstream,
-            clientIpHash = ipHash
+            clientIpHash = ipHash,
+            limiterMs = limiterMs,
+            upstreamMs = upstreamMs,
+            totalMs = totalMs
         )
 
         logSink?.let { sink ->
             id.toLongOrNull()?.let { numericId ->
-                sink(com.cutm.nt14.gateway.db.LogEntry(numericId, timestamp, storedClient, ipHash, method, path, status, latencyMs, decision, source, upstream))
+                sink(com.cutm.nt14.gateway.db.LogEntry(numericId, timestamp, storedClient, ipHash, method, path, status, latencyMs, decision, source, upstream, limiterMs, upstreamMs, totalMs))
             }
         }
 
@@ -215,11 +221,23 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val allowedCount = totalAllowed.get()
         val throttledCount = totalThrottled.get()
 
-        val latencies = (if (recentLogs60s.isNotEmpty()) recentLogs60s else logsRingBuffer.toList())
-            .map { it.latencyMs }.sorted()
+        val sampleLogs = if (recentLogs60s.isNotEmpty()) recentLogs60s else logsRingBuffer.toList()
+        val latencies = sampleLogs.map { it.latencyMs }.sorted()
+        val limiterLatencies = sampleLogs.mapNotNull { it.limiterMs }.sorted()
+        val upstreamLatencies = sampleLogs.mapNotNull { it.upstreamMs }.sorted()
+        val totalLatencies = sampleLogs.map { it.totalMs ?: it.latencyMs }.sorted()
 
-        val p50 = if (latencies.isNotEmpty()) latencies[(latencies.size * 0.50).toInt().coerceAtMost(latencies.lastIndex)] else 0L
-        val p95 = if (latencies.isNotEmpty()) latencies[(latencies.size * 0.95).toInt().coerceAtMost(latencies.lastIndex)] else 0L
+        fun pct(sorted: List<Long>, q: Double): Long =
+            if (sorted.isNotEmpty()) sorted[(sorted.size * q).toInt().coerceAtMost(sorted.lastIndex)] else 0L
+
+        val p50 = pct(latencies, 0.50)
+        val p95 = pct(latencies, 0.95)
+        val limP50 = pct(limiterLatencies, 0.50)
+        val limP95 = pct(limiterLatencies, 0.95)
+        val upP50 = pct(upstreamLatencies, 0.50)
+        val upP95 = pct(upstreamLatencies, 0.95)
+        val totP50 = pct(totalLatencies, 0.50)
+        val totP95 = pct(totalLatencies, 0.95)
 
         val activeClients = recentLogs60s.map { it.clientId }.distinct().size.coerceAtLeast(if (logsRingBuffer.isNotEmpty()) 1 else 0)
 
@@ -227,7 +245,7 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val errorRate = if (totalWindow > 0) (throttledCount.toDouble() / totalWindow) else 0.0
 
         val endpointCounts = mutableMapOf<String, Long>()
-        for (log in (if (recentLogs60s.isNotEmpty()) recentLogs60s else logsRingBuffer.toList())) {
+        for (log in sampleLogs) {
             endpointCounts[log.path] = (endpointCounts[log.path] ?: 0L) + 1L
         }
 
@@ -240,6 +258,12 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             errorRate = (errorRate * 1000).roundToInt() / 1000.0,
             p50LatencyMs = p50,
             p95LatencyMs = p95,
+            p50LimiterMs = limP50,
+            p95LimiterMs = limP95,
+            p50UpstreamMs = upP50,
+            p95UpstreamMs = upP95,
+            p50TotalMs = totP50,
+            p95TotalMs = totP95,
             activeClients = activeClients,
             endpointCounts = endpointCounts,
             demoMode = isDemo
@@ -264,8 +288,14 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
         val errorRate = if (total > 0) blocked.toDouble() / total.toDouble() else 0.0
 
         val latencies = filtered.map { it.latencyMs }.sorted()
+        val limLat = filtered.mapNotNull { it.limiterMs }.sorted()
+        val upLat = filtered.mapNotNull { it.upstreamMs }.sorted()
+        val totLat = filtered.map { it.totalMs ?: it.latencyMs }.sorted()
+        fun pct(sorted: List<Long>, q: Double): Long =
+            if (sorted.isNotEmpty()) sorted[(sorted.size * q).toInt().coerceAtMost(sorted.lastIndex)] else 0L
         val avgLatency = if (latencies.isNotEmpty()) latencies.average().toLong() else 0L
-        val p95 = if (latencies.isNotEmpty()) latencies[(latencies.size * 0.95).toInt().coerceAtMost(latencies.lastIndex)] else 0L
+        val p50 = pct(latencies, 0.50)
+        val p95 = pct(latencies, 0.95)
 
         // Peak RPS over 1s intervals
         val timeBuckets = filtered.groupBy { it.timestamp / 1000L }
@@ -281,7 +311,14 @@ class TrafficHistoryManager(private val maxLogs: Int = 1000) {
             blockedRequests = blocked,
             errorRate = (errorRate * 1000).roundToInt() / 1000.0,
             avgLatencyMs = avgLatency,
+            p50LatencyMs = p50,
             p95LatencyMs = p95,
+            p50LimiterMs = pct(limLat, 0.50),
+            p95LimiterMs = pct(limLat, 0.95),
+            p50UpstreamMs = pct(upLat, 0.50),
+            p95UpstreamMs = pct(upLat, 0.95),
+            p50TotalMs = pct(totLat, 0.50),
+            p95TotalMs = pct(totLat, 0.95),
             peakRps = peakRps,
             topEndpoints = topEndpoints,
             topClients = topClients,

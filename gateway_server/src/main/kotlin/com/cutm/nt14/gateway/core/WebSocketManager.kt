@@ -152,6 +152,7 @@ class WebSocketManager {
     fun activeSubscriberCount(): Int = sessions.size
 
     fun broadcast(event: GatewayEvent) {
+        if (sessions.isEmpty()) return
         val jsonPayload = json.encodeToString(event)
         val frame = Frame.Text(jsonPayload)
 

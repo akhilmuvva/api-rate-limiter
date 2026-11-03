@@ -85,6 +85,12 @@ data class GatewayMetrics(
     val errorRate: Double = 0.0,
     val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long = 0,
+    val p50LimiterMs: Long = 0,
+    val p95LimiterMs: Long = 0,
+    val p50UpstreamMs: Long = 0,
+    val p95UpstreamMs: Long = 0,
+    val p50TotalMs: Long = 0,
+    val p95TotalMs: Long = 0,
     val activeClients: Int = 0,
     val endpointCounts: Map<String, Long> = emptyMap(),
     val demoMode: Boolean = false
@@ -109,7 +115,10 @@ data class RequestLogDto(
     val decision: String,
     val source: String = "real",
     val upstream: String? = null,
-    val clientIpHash: String? = null
+    val clientIpHash: String? = null,
+    val limiterMs: Long? = null,
+    val upstreamMs: Long? = null,
+    val totalMs: Long? = null
 )
 
 @Serializable
@@ -131,7 +140,14 @@ data class TrafficReportDto(
     val blockedRequests: Long,
     val errorRate: Double,
     val avgLatencyMs: Long,
+    val p50LatencyMs: Long = 0,
     val p95LatencyMs: Long,
+    val p50LimiterMs: Long = 0,
+    val p95LimiterMs: Long = 0,
+    val p50UpstreamMs: Long = 0,
+    val p95UpstreamMs: Long = 0,
+    val p50TotalMs: Long = 0,
+    val p95TotalMs: Long = 0,
     val peakRps: Double,
     val topEndpoints: Map<String, Long>,
     val topClients: Map<String, Long>,
@@ -321,7 +337,13 @@ data class MetricsPointDto(
     val throttled: Long,
     val errors: Long,
     val p50: Double,   // request-weighted mean of per-minute p50
-    val p95: Double    // max of per-minute p95 within the bucket (upper bound)
+    val p95: Double,   // max of per-minute p95 within the bucket (upper bound)
+    val limiterP50: Double = 0.0,
+    val limiterP95: Double = 0.0,
+    val upstreamP50: Double? = null,
+    val upstreamP95: Double? = null,
+    val totalP50: Double = 0.0,
+    val totalP95: Double = 0.0
 )
 
 @Serializable
