@@ -114,9 +114,10 @@ class RequestLogWriter(
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING"""
                 ).use { ps ->
                     for (e in batch) {
+                        val safeClientId = IpPrivacy.storedClientId(e.clientId)
                         ps.setLong(1, e.id)
                         ps.setTimestamp(2, Timestamp(e.tsMs))
-                        ps.setString(3, e.clientId)
+                        ps.setString(3, safeClientId)
                         ps.setString(4, e.clientIpHash)
                         ps.setString(5, e.method)
                         ps.setString(6, e.path.take(512))
@@ -137,8 +138,9 @@ class RequestLogWriter(
                 data class Agg(var label: String, var source: String, var count: Long, var throttled: Long, var first: Long, var last: Long)
                 val perClient = LinkedHashMap<String, Agg>()
                 for (e in batch) {
-                    val key = if (e.clientId.startsWith("ip:") && e.clientIpHash != null) "iphash:${e.clientIpHash}" else e.clientId
-                    val a = perClient.getOrPut(key) { Agg(e.clientId, e.source, 0, 0, e.tsMs, e.tsMs) }
+                    val safeClientId = IpPrivacy.storedClientId(e.clientId)
+                    val key = if (safeClientId.startsWith("ip:") && e.clientIpHash != null) "iphash:${e.clientIpHash}" else safeClientId
+                    val a = perClient.getOrPut(key) { Agg(safeClientId, e.source, 0, 0, e.tsMs, e.tsMs) }
                     a.count++
                     if (e.status == 429 || e.decision != "allowed") a.throttled++
                     a.first = minOf(a.first, e.tsMs); a.last = maxOf(a.last, e.tsMs)

@@ -6,24 +6,25 @@ A complete, end-to-end API rate limiting, durable PostgreSQL telemetry, and synt
 
 ---
 
-## Durable PostgreSQL Schema (`V1__init.sql` – `V3__latency_observability.sql`)
+## Durable PostgreSQL Schema (`V1__init.sql` – `V4__probe_timeout_10s_and_scrub_emails.sql`)
 
 Migrations run automatically on startup via Flyway (`gateway_server/src/main/resources/db/migration/`) whenever `DATABASE_URL` is set:
 
 | Table | Primary Key | Purpose & Retention |
 |---|---|---|
-| `request_logs` | `id BIGINT` (`ms << 16 \| seq`) | Every proxied/demo decision (`ts`, `client_id` masked, `client_ip_hash` HMAC-SHA256, `method`, `path`, `status`, `latency_ms`, `limiter_ms`, `upstream_ms` null on 429, `total_ms`, `decision`, `source` `real\|demo`, `upstream`). **Retention: 7 days**. |
+| `request_logs` | `id BIGINT` (`ms << 16 \| seq`) | Every proxied/demo decision (`ts`, `client_id` masked IP or hashed user key `user:<16-hex>`, `client_ip_hash` HMAC-SHA256, `method`, `path`, `status`, `latency_ms`, `limiter_ms`, `upstream_ms` null on 429, `total_ms`, `decision`, `source` `real\|demo`, `upstream`). **Retention: 7 days**. |
 | `metrics_1m` | `(minute, endpoint, source)` | Per-minute rollups (`requests`, `allowed`, `throttled`, `errors` [5xx only], `p50`, `p95`, `latency_sum_ms`, `limiter_p50`, `limiter_p95`, `upstream_p50`, `upstream_p95`, `total_p50`, `total_p95`). **Retention: 90 days**. |
-| `clients` | `id TEXT` | Per-client lifetime counters (`label` masked IP or user email, `source`, `first_seen`, `last_seen`, `total_requests`, `throttled_count`). |
-| `bans` | `client_key TEXT` | Active IP/client bans (`iphash:<hmac>` or `user:<email>`, `reason`, `created_at`, `expires_at`, `created_by`), restored on gateway startup. |
+| `clients` | `id TEXT` | Per-client lifetime counters (`label` masked IP or hashed user key `user:<16-hex>`, `source`, `first_seen`, `last_seen`, `total_requests`, `throttled_count`). |
+| `bans` | `client_key TEXT` | Active IP/client bans (`iphash:<hmac>` or `user:<16-hex>`, `reason`, `created_at`, `expires_at`, `created_by`), restored on gateway startup. |
 | `rules` | `endpoint_id TEXT` | Dynamic rate-limit rules (`limit_per_min`, `burst_limit`, `action`, `updated_at`), restored on startup. |
 | `incidents` | `id TEXT` | Security & target-down incidents (`ts`, `type`, `severity`, `detail`, `target_id` `ON DELETE SET NULL`, `resolved_at`). Auto-resolved when a target recovers or is deleted, or via `PATCH /api/incidents/{id}/resolve`. |
-| `monitored_targets` | `id BIGSERIAL` | Synthetic probe targets (`name`, `url`, `method`, `expected_status`, `interval_sec`, `timeout_ms`, `enabled`, `source`, `synthetic`). Seeded with `https://polylance-fv-1-45wy.onrender.com/health` and `https://polylance-fv-1-45wy.onrender.com/api/jobs`. Synthetic test targets (`synthetic = true`) are hidden from `GET /api/targets/status` by default unless `?includeSynthetic=true`. |
+| `monitored_targets` | `id BIGSERIAL` | Synthetic probe targets (`name`, `url`, `method`, `expected_status`, `interval_sec`, `timeout_ms` default `10000`, `enabled`, `source`, `synthetic`). Seeded with `https://polylance-fv-1-45wy.onrender.com/health` and `https://polylance-fv-1-45wy.onrender.com/api/jobs`. Synthetic test targets (`synthetic = true`) are hidden from `GET /api/targets/status` by default unless `?includeSynthetic=true`. |
 | `probe_results` | `id BIGSERIAL` | Probe outcomes (`target_id`, `ts`, `up`, `status_code`, `latency_ms`, `error`, `transition` `up->down\|down->up`). **Retention: 30 days**. |
 
-### Asynchronous Batch Writer & Privacy
+### Asynchronous Batch Writer, Privacy & Fast-Retry Probe Scheduling
 - **Bounded Queue (`RequestLogWriter`)**: The request hot path only calls non-blocking `ArrayBlockingQueue.offer` (capacity `10,000`). A background coroutine coalesces bursts and flushes up to `1,000` entries per JDBC batch using `reWriteBatchedInserts=true`. If the queue ever fills, entries are dropped and counted (`PersistenceStatus.dropped`) so the request hot path never blocks.
-- **IP Privacy (`IpPrivacy`)**: Raw client IPs are never stored in `request_logs` or `clients`, nor logged. `client_id` stores either `user:<email>` or a masked IP (`ip:203.0.113.x`), and `client_ip_hash` stores `HMAC-SHA256(ip, IP_HASH_SALT)` (`iphash:<24-hex>`) for correlation and banning. `IP_HASH_SALT` is required on startup with no default fallback in code.
+- **IP & Identity Privacy (`IpPrivacy`)**: Raw client IPs and raw user email addresses are never stored in `request_logs` or `clients`, nor logged. `client_id` stores either a keyed HMAC user ID (`user:<16-hex>`) or a masked IP (`ip:203.0.113.x`), and `client_ip_hash` stores `HMAC-SHA256(ip, IP_HASH_SALT)` (`iphash:<24-hex>`) for correlation and banning. `IP_HASH_SALT` is required on startup with no default fallback in code.
+- **Synthetic Probe Fast-Retry (`TargetMonitor`)**: Healthy targets poll on their configured `interval_sec` (default `30s`) with a `10s` (`10,000 ms`) timeout so slow probes never overlap the next interval. When a target is registered or invalidated (`nextDueAt = 0`), Probe #1 runs immediately (`t ≈ 0s`). Whenever a probe fails (`up == false`), `TargetMonitor` schedules the next retry at `min(intervalSec, failRetrySec)` where `failRetrySec = 10s` (`st.nextDueAt = now + 1000L * (if (up) t.intervalSec else minOf(t.intervalSec, failRetrySec))`). Consequently, a failing `30s`-interval target executes 3 consecutive failed probes at `t ≈ 0s`, `t ≈ 10s`, and `t ≈ 20s`, opening a `CRITICAL` `"Target Down"` incident (`failThreshold = 3`) in ~`21–23s` (well under the `90s` SLA) while keeping steady-state healthy polling at `30s`.
 
 ---
 

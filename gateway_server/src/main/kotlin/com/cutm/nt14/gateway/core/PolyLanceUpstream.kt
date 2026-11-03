@@ -26,8 +26,12 @@ import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.GZIPInputStream
 
+val HandlerStartNsKey = AttributeKey<Long>("HandlerStartNs")
 val UpstreamMsKey = AttributeKey<Long>("UpstreamMs")
 val UpstreamProtocolKey = AttributeKey<String>("UpstreamProtocol")
+val UpstreamParseMsKey = AttributeKey<Long>("UpstreamParseMs")
+
+typealias UpstreamTelemetryCallback = (upstreamMs: Long, protocol: String, parseMs: Long) -> Unit
 
 class PolyLanceUpstreamException(message: String) : Exception(message)
 
@@ -64,7 +68,7 @@ class PolyLanceUpstream(
     private val logger = LoggerFactory.getLogger(PolyLanceUpstream::class.java)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    private suspend fun fetchJson(path: String, onUpstream: ((Long, String) -> Unit)? = null): JsonElement {
+    private suspend fun fetchJson(path: String, onUpstream: UpstreamTelemetryCallback? = null): JsonElement {
         val url = "$baseUrl$path"
         val startNs = System.nanoTime()
         val req = HttpRequest.newBuilder(URI(url))
@@ -79,7 +83,7 @@ class PolyLanceUpstream(
             sharedHttpClient.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray()).await()
         } catch (e: Exception) {
             val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
-            onUpstream?.invoke(elapsedMs, lastProtocol)
+            onUpstream?.invoke(elapsedMs, lastProtocol, 0L)
             logger.warn("PolyLance upstream unreachable: $url -> ${e.message}")
             throw PolyLanceUpstreamException("PolyLance upstream unreachable: ${e.message}")
         }
@@ -87,28 +91,30 @@ class PolyLanceUpstream(
         val proto = resp.version().name
         lastProtocol = proto
         totalUpstreamCalls.incrementAndGet()
-        onUpstream?.invoke(elapsedMs, proto)
 
         val status = resp.statusCode()
         if (status !in 200..299) {
+            onUpstream?.invoke(elapsedMs, proto, 0L)
             throw PolyLanceUpstreamException("PolyLance upstream returned HTTP $status for $path")
         }
+        val parseStartNs = System.nanoTime()
         val rawBytes = resp.body()
         val isGzip = resp.headers().firstValue("Content-Encoding").orElse("").equals("gzip", ignoreCase = true)
-        val body = withContext(Dispatchers.Default) {
-            if (isGzip && rawBytes.isNotEmpty()) {
-                GZIPInputStream(ByteArrayInputStream(rawBytes)).bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-            } else {
-                String(rawBytes, StandardCharsets.UTF_8)
-            }
+        val body = if (isGzip && rawBytes.isNotEmpty()) {
+            GZIPInputStream(ByteArrayInputStream(rawBytes)).bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+        } else {
+            String(rawBytes, StandardCharsets.UTF_8)
         }
-        return json.parseToJsonElement(body)
+        val parsed = json.parseToJsonElement(body)
+        val parseMs = ((System.nanoTime() - parseStartNs) / 1_000_000L).coerceAtLeast(0L)
+        onUpstream?.invoke(elapsedMs, proto, parseMs)
+        return parsed
     }
 
     /**
      * Periodic health probe to keep Render upstream instance warm and prevent cold-start sleeps.
      */
-    suspend fun keepAlive(onUpstream: ((Long, String) -> Unit)? = null): Boolean {
+    suspend fun keepAlive(onUpstream: UpstreamTelemetryCallback? = null): Boolean {
         val startNs = System.nanoTime()
         return try {
             val req = HttpRequest.newBuilder(URI("$baseUrl/health"))
@@ -121,18 +127,18 @@ class PolyLanceUpstream(
             val proto = resp.version().name
             lastProtocol = proto
             totalUpstreamCalls.incrementAndGet()
-            onUpstream?.invoke(elapsedMs, proto)
+            onUpstream?.invoke(elapsedMs, proto, 0L)
             resp.statusCode() in 200..299
         } catch (e: Exception) {
             val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
-            onUpstream?.invoke(elapsedMs, lastProtocol)
+            onUpstream?.invoke(elapsedMs, lastProtocol, 0L)
             logger.debug("PolyLance keepAlive notice: ${e.message}")
             false
         }
     }
 
     /** Live escrow jobs from PolyLance `/api/jobs`. */
-    suspend fun fetchEscrows(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceEscrow> {
+    suspend fun fetchEscrows(onUpstream: UpstreamTelemetryCallback? = null): List<PolyLanceEscrow> {
         val root = fetchJson("/api/jobs", onUpstream).jsonObject
         val jobs = root["jobs"] as? JsonArray ?: return emptyList()
         return jobs.mapNotNull { el ->
@@ -158,14 +164,14 @@ class PolyLanceUpstream(
         }.sortedByDescending { it.createdAt ?: 0L }
     }
 
-    private suspend fun fetchProfiles(onUpstream: ((Long, String) -> Unit)? = null): List<JsonObject> {
+    private suspend fun fetchProfiles(onUpstream: UpstreamTelemetryCallback? = null): List<JsonObject> {
         val root = fetchJson("/api/sync", onUpstream).jsonObject
         val profiles = root["profiles"] as? JsonObject ?: return emptyList()
         return profiles.values.mapNotNull { it as? JsonObject }
     }
 
     /** GitHub-verified skill attestations derived from live PolyLance profiles. */
-    suspend fun fetchAttestations(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceAttestation> {
+    suspend fun fetchAttestations(onUpstream: UpstreamTelemetryCallback? = null): List<PolyLanceAttestation> {
         return fetchProfiles(onUpstream)
             .filter { it.str("githubVerified") == "true" && !it.str("githubUsername").isNullOrBlank() }
             .map { p ->
@@ -182,7 +188,7 @@ class PolyLanceUpstream(
     }
 
     /** Talent directory from live PolyLance profiles, highest score first. */
-    suspend fun fetchTalents(onUpstream: ((Long, String) -> Unit)? = null): List<PolyLanceTalent> {
+    suspend fun fetchTalents(onUpstream: UpstreamTelemetryCallback? = null): List<PolyLanceTalent> {
         return fetchProfiles(onUpstream)
             .filter { it.str("role") != "client" }
             .map { p ->

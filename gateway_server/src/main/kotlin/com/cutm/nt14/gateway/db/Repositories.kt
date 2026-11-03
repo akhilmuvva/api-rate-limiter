@@ -64,6 +64,7 @@ private fun logWhere(q: LogQuery, includeCursor: Boolean = true): Where {
         when {
             c.startsWith("iphash:") -> w.add("client_ip_hash = ?", { ps, i -> ps.setString(i, c.removePrefix("iphash:")) })
             IpPrivacy.looksLikeIp(c) -> w.add("client_ip_hash = ?", { ps, i -> ps.setString(i, IpPrivacy.hash(c)) })
+            c.contains('@') -> w.add("client_id = ?", { ps, i -> ps.setString(i, IpPrivacy.userKey(c)) })
             else -> w.add("client_id = ?", { ps, i -> ps.setString(i, c) })
         }
     }

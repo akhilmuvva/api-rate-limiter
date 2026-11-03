@@ -147,6 +147,66 @@ class Migration2To3Test {
         }
     }
 
+    @Test
+    fun migrate1To2To3_preservesSeededV1RowsAndCreatesAllForeignKeyIndices() {
+        val schemaV1File = resolveSchemaFile(1)
+        val schemaV3File = resolveSchemaFile(3)
+
+        val v1Root = JsonParser.parseString(schemaV1File.readText()).asJsonObject
+        val v3Root = JsonParser.parseString(schemaV3File.readText()).asJsonObject
+        assertEquals(1, v1Root.getAsJsonObject("database").get("version").asInt)
+        assertEquals(3, v3Root.getAsJsonObject("database").get("version").asInt)
+
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("PRAGMA foreign_keys = ON")
+
+                val v1Entities = v1Root.getAsJsonObject("database").getAsJsonArray("entities")
+                for (entityEl in v1Entities) {
+                    val entityObj = entityEl.asJsonObject
+                    val tableName = entityObj.get("tableName").asString
+                    val createSql = entityObj.get("createSql").asString.replace("\${TABLE_NAME}", tableName)
+                    stmt.execute(createSql)
+                }
+
+                stmt.execute(
+                    "INSERT INTO `Endpoints` (`endpointId`, `name`, `baseUrl`, `method`, `status`, `ownerEmail`, `timestamp`, `syncStatus`) " +
+                        "VALUES ('ep_v1', 'Health API', 'https://api-rate-limiter-gateway-qgfy.onrender.com/health', 'GET', 'Active', 'admin@cutm.ac.in', 1730000000000, 'SYNCED')"
+                )
+                stmt.execute(
+                    "INSERT INTO `RequestLogs` (`logId`, `endpointId`, `timestamp`, `sourceIp`, `userId`, `statusCode`, `latencyMs`, `syncStatus`) " +
+                        "VALUES ('log_v1', 'ep_v1', 1730000001000, 'iphash:2f5ef1fd5f4b79214f55814b', 'user:ee792d0ba4bd1234', 200, 38, 'SYNCED')"
+                )
+            }
+
+            val supportDb = JdbcSupportSQLiteDatabase(conn)
+            DatabaseModule.MIGRATION_1_2.migrate(supportDb)
+            DatabaseModule.MIGRATION_2_3.migrate(supportDb)
+
+            conn.createStatement().use { stmt ->
+                stmt.executeQuery("SELECT `userId`, `latencyMs` FROM `RequestLogs` WHERE `logId` = 'log_v1'").use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals("user:ee792d0ba4bd1234", rs.getString("userId"))
+                    assertEquals(38, rs.getInt("latencyMs"))
+                }
+
+                val existingIndices = mutableSetOf<String>()
+                stmt.executeQuery("SELECT name FROM sqlite_master WHERE type = 'index'").use { rs ->
+                    while (rs.next()) {
+                        existingIndices.add(rs.getString("name"))
+                    }
+                }
+                val expectedIndices = setOf(
+                    "index_RequestLogs_endpointId",
+                    "index_RateLimits_endpointId",
+                    "index_AbuseEvents_logId",
+                    "index_DDoSIncidents_endpointId"
+                )
+                assertTrue(existingIndices.containsAll(expectedIndices))
+            }
+        }
+    }
+
     private class JdbcSupportSQLiteDatabase(private val connection: Connection) : SupportSQLiteDatabase {
         override fun execSQL(sql: String) {
             connection.createStatement().use { it.execute(sql) }

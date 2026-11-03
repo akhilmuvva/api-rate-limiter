@@ -61,7 +61,7 @@ class PersistenceAndMonitoringTest {
                 st.execute(
                     """INSERT INTO monitored_targets (name, url, method, expected_status, interval_sec, timeout_ms) VALUES
                        ('PolyLance health',  'https://polylance-fv-1-45wy.onrender.com/health',   'GET', 200, 30, 10000),
-                       ('PolyLance escrows', 'https://polylance-fv-1-45wy.onrender.com/api/jobs', 'GET', 200, 30, 15000)"""
+                       ('PolyLance escrows', 'https://polylance-fv-1-45wy.onrender.com/api/jobs', 'GET', 200, 30, 10000)"""
                 )
             }
         }

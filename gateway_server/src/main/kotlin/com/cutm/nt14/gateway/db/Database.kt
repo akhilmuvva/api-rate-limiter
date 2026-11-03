@@ -45,11 +45,12 @@ class GatewayDatabase(val dataSource: DataSource) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(GatewayDatabase::class.java)
 
     fun migrate(): Int {
-        val result = Flyway.configure()
+        val flyway = Flyway.configure()
             .dataSource(dataSource)
             .locations("classpath:db/migration")
             .load()
-            .migrate()
+        runCatching { flyway.repair() }
+        val result = flyway.migrate()
         logger.info("Flyway: applied ${result.migrationsExecuted} migration(s); schema at ${result.targetSchemaVersion ?: "current"}")
         return result.migrationsExecuted
     }
@@ -140,9 +141,20 @@ object IpPrivacy {
     fun looksLikeIp(v: String): Boolean =
         Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(v) || (v.contains(':') && Regex("^[0-9a-fA-F:.]+$").matches(v))
 
-    /** The value written to request_logs.client_id. Users keep their identity; IPs are masked. */
+    /** Stable HMAC-SHA256 user identifier (`user:<16-hex>`) so raw emails are never stored in request_logs or clients. */
+    fun userKey(emailOrSub: String): String {
+        val normalized = emailOrSub.trim().removePrefix("user:").lowercase()
+        return "user:${hash(normalized).take(16)}"
+    }
+
+    /** The value written to request_logs.client_id. Users are keyed by HMAC hash (`user:<16-hex>`); IPs are masked (`ip:203.0.113.x`). */
     fun storedClientId(rawClientId: String): String = when {
-        rawClientId.startsWith("user:") || rawClientId.startsWith("demo:") -> rawClientId
+        rawClientId.startsWith("user:") -> {
+            val rest = rawClientId.removePrefix("user:")
+            if (rest.contains('@') || !Regex("^[0-9a-f]{12,24}$").matches(rest)) userKey(rest) else rawClientId
+        }
+        rawClientId.contains('@') -> userKey(rawClientId)
+        rawClientId.startsWith("demo:") -> rawClientId
         looksLikeIp(rawClientId) -> "ip:" + mask(rawClientId)
         else -> rawClientId
     }

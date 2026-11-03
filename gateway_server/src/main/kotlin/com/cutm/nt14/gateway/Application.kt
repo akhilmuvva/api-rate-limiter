@@ -111,7 +111,7 @@ fun Application.module(
     // 1. Content Negotiation (JSON)
     install(ContentNegotiation) {
         json(Json {
-            prettyPrint = true
+            prettyPrint = false
             isLenient = true
             ignoreUnknownKeys = true
             encodeDefaults = true
@@ -174,6 +174,7 @@ fun Application.module(
 
         if (path.startsWith("/api/") && !isControlPlane) {
             val handlerStartNs = System.nanoTime()
+            call.attributes.put(com.cutm.nt14.gateway.core.HandlerStartNsKey, handlerStartNs)
 
             // Resolve identity from JWT Bearer token if present
             val authHeader = call.request.headers["Authorization"]
@@ -182,7 +183,7 @@ fun Application.module(
 
             val jwtClaims = bearerToken?.let { jwtService.verifyToken(it) }
             val rawClientIp = rateLimiter.resolveClientId(call)
-            val clientId = if (jwtClaims != null) "user:${jwtClaims.email}" else rawClientIp
+            val clientId = if (jwtClaims != null) com.cutm.nt14.gateway.db.IpPrivacy.userKey(jwtClaims.email) else rawClientIp
 
             // Evaluate rate limit: ADMIN role with valid JWT gets privileged headroom
             val limiterStartNs = System.nanoTime()
@@ -204,7 +205,7 @@ fun Application.module(
             call.response.header("X-Limiter-Ms", limiterMs.toString())
 
             if (jwtClaims != null) {
-                call.response.header("X-Authenticated-User", jwtClaims.email)
+                call.response.header("X-Authenticated-User", clientId)
                 call.response.header("X-Authenticated-Role", jwtClaims.role)
             }
 

@@ -16,6 +16,18 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    /**
+     * v1 (commit 90898406) -> v2 (commit 3a18d023):
+     * Only DAO `@Query("DELETE FROM ...")` methods were added between v1 and v2;
+     * zero `@Entity` table definitions or columns changed (same identityHash
+     * `f6fb2a17f5e2c115b8c2a65ec77688d0`). This no-op migration preserves all v1 rows intact.
+     */
+    internal val MIGRATION_1_2 = object : Migration(1, 2) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // Schema DDL is identical between v1 and v2; all rows are preserved intact.
+        }
+    }
+
     internal val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_AbuseEvents_logId` ON `AbuseEvents` (`logId`)")
@@ -33,7 +45,7 @@ object DatabaseModule {
             NT14Database::class.java,
             "nt14_database"
         )
-            .addMigrations(MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
     }
 

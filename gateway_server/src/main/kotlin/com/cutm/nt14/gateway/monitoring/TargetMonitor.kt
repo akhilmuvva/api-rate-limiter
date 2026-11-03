@@ -177,7 +177,7 @@ class TargetMonitor(
         val last = recent.firstOrNull()
         return TargetStatusDto(
             id = t.id, name = t.name, url = t.url, method = t.method,
-            expectedStatus = t.expectedStatus, intervalSec = t.intervalSec, enabled = t.enabled,
+            expectedStatus = t.expectedStatus, intervalSec = t.intervalSec, timeoutMs = t.timeoutMs, enabled = t.enabled,
             source = t.source, synthetic = t.synthetic,
             up = last?.up,
             lastStatusCode = last?.statusCode,

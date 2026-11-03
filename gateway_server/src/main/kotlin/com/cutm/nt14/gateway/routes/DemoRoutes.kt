@@ -1,8 +1,11 @@
 package com.cutm.nt14.gateway.routes
 
+import com.cutm.nt14.gateway.core.HandlerStartNsKey
 import com.cutm.nt14.gateway.core.PolyLanceUpstream
 import com.cutm.nt14.gateway.core.UpstreamMsKey
+import com.cutm.nt14.gateway.core.UpstreamParseMsKey
 import com.cutm.nt14.gateway.core.UpstreamProtocolKey
+import com.cutm.nt14.gateway.core.UpstreamTelemetryCallback
 import com.cutm.nt14.gateway.models.*
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -20,13 +23,18 @@ import java.util.concurrent.CopyOnWriteArrayList
 private val logger = LoggerFactory.getLogger("DemoRoutes")
 private val dynamicLocalEscrows = CopyOnWriteArrayList<PolyLanceEscrow>()
 
-private fun ApplicationCall.recordUpstream(): (Long, String) -> Unit = { ms, proto ->
+private fun ApplicationCall.recordUpstream(): UpstreamTelemetryCallback = { ms, proto, parseMs ->
     attributes.put(UpstreamMsKey, ms)
     attributes.put(UpstreamProtocolKey, proto)
+    attributes.put(UpstreamParseMsKey, parseMs)
     if (!response.isCommitted) {
         runCatching {
+            val startNs = attributes.getOrNull(HandlerStartNsKey)
+            val totalSoFar = if (startNs != null) ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(ms + parseMs) else (ms + parseMs)
             response.headers.append("X-Upstream-Ms", ms.toString(), safeOnly = false)
             response.headers.append("X-Upstream-Protocol", proto, safeOnly = false)
+            response.headers.append("X-Parse-Ms", parseMs.toString(), safeOnly = false)
+            response.headers.append("X-Total-Ms", totalSoFar.toString(), safeOnly = false)
         }
     }
 }

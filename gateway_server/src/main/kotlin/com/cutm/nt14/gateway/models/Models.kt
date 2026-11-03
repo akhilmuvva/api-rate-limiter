@@ -403,6 +403,7 @@ data class TargetStatusDto(
     val method: String,
     val expectedStatus: Int,
     val intervalSec: Int,
+    val timeoutMs: Int = 10_000,
     val enabled: Boolean,
     val source: String = "real",
     val synthetic: Boolean = false,
